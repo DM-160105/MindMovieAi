@@ -52,7 +52,7 @@ def _tokenize(text):
 def _load_category_map():
     """Load category_id -> name from US JSON (they share the same categories)."""
     global _category_map
-    json_path = get_dataset_file("US_category_id.json", subfolder="youtube_dataset")
+    json_path = get_dataset_file("US_category_id.json")
     if os.path.exists(json_path):
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -81,7 +81,7 @@ def _load_videos():
 
     dfs = []
     for region, fname in region_files:
-        fpath = get_dataset_file(fname, subfolder="youtube_dataset")
+        fpath = get_dataset_file(fname)
         if not os.path.exists(fpath):
             continue
         try:
@@ -182,7 +182,7 @@ def _build_comment_classifier():
     if _comment_clf is not None:
         return
 
-    comment_path = get_dataset_file("YoutubeCommentsDataSet.csv", subfolder="youtube_comment_dataset")
+    comment_path = get_dataset_file("YoutubeCommentsDataSet.csv")
 
     if not os.path.exists(comment_path):
         logger.warning("Comment dataset not found; using rule-based fallback.")
@@ -633,18 +633,5 @@ def _mock_recommendations(video_title, n=5):
     ]
 
 
-# Eager initialization on import (background-friendly)
-def _init_lazy():
-    try:
-        _load_videos()
-        _build_tfidf()
-        _build_comment_classifier()
-    except Exception as e:
-        logger.warning(f"youtube_ml lazy init error: {e}")
-
-
-# Initialize on import in a try-except to avoid crashing the server
-try:
-    _init_lazy()
-except Exception:
-    pass
+# No eager initialization to avoid blocking Render startup.
+# Initializations happen lazily when specific endpoints are hit.
