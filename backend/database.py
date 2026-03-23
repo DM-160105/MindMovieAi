@@ -13,7 +13,18 @@ MONGODB_URI = os.getenv(
 client = MongoClient(MONGODB_URI)
 
 # Extract database name from URI or use default
-_db_name = MONGODB_URI.rsplit("/", 1)[-1].split("?")[0] if "/" in MONGODB_URI else "stremflix"
+# Logic: use the path segment after the first '/', split at '?' to remove query params
+try:
+    # Get the part after 'mongodb://' or 'mongodb+srv://'
+    after_scheme = MONGODB_URI.split("//")[-1]
+    if "/" in after_scheme:
+        path_segment = after_scheme.split("/", 1)[1].split("?")[0]
+    else:
+        path_segment = ""
+    _db_name = path_segment if path_segment else "mindmovieai"
+except Exception:
+    _db_name = "mindmovieai"
+
 db = client[_db_name]
 
 # ─── Collection References ──────────────────────────────────────────────────────
