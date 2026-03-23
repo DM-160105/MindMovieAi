@@ -1,20 +1,30 @@
 import type { NextConfig } from "next";
 
+const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+// Extract hostname from backend URL for image remotePatterns
+let backendHostname = 'localhost';
+try {
+  backendHostname = new URL(backendUrl).hostname;
+} catch {}
+
 const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'image.tmdb.org' },
       { protocol: 'https', hostname: 'img.youtube.com' },
+      { protocol: 'https', hostname: 'i.ytimg.com' },
       { protocol: 'https', hostname: 'placehold.co' },
       { protocol: 'http', hostname: 'localhost' },
+      { protocol: 'https', hostname: backendHostname },
     ],
   },
-  // Allow cross-origin requests to the FastAPI backend during development
+  // Proxy /api/* to backend — works in dev and on Vercel
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8000/:path*',
+        destination: `${backendUrl}/:path*`,
       },
     ];
   },

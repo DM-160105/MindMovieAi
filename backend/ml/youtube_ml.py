@@ -12,6 +12,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from hf_utils import get_dataset_file
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ def _tokenize(text):
 def _load_category_map():
     """Load category_id -> name from US JSON (they share the same categories)."""
     global _category_map
-    json_path = os.path.join(YT_DATASET_DIR, "US_category_id.json")
+    json_path = get_dataset_file("US_category_id.json", subfolder="youtube_dataset")
     if os.path.exists(json_path):
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -79,7 +81,7 @@ def _load_videos():
 
     dfs = []
     for region, fname in region_files:
-        fpath = os.path.join(YT_DATASET_DIR, fname)
+        fpath = get_dataset_file(fname, subfolder="youtube_dataset")
         if not os.path.exists(fpath):
             continue
         try:
@@ -180,7 +182,9 @@ def _build_comment_classifier():
     if _comment_clf is not None:
         return
 
-    if not os.path.exists(COMMENT_DATASET):
+    comment_path = get_dataset_file("YoutubeCommentsDataSet.csv", subfolder="youtube_comment_dataset")
+
+    if not os.path.exists(comment_path):
         logger.warning("Comment dataset not found; using rule-based fallback.")
         return
 
@@ -189,7 +193,7 @@ def _build_comment_classifier():
         from sklearn.feature_extraction.text import TfidfVectorizer
 
         logger.info("Loading comment dataset for sentiment training...")
-        df = pd.read_csv(COMMENT_DATASET, encoding="latin-1", on_bad_lines="skip")
+        df = pd.read_csv(comment_path, encoding="latin-1", on_bad_lines="skip")
 
         # Detect text and label columns (dataset-specific)
         text_col = None

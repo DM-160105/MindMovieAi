@@ -1,11 +1,14 @@
+import os
+from dotenv import load_dotenv
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import jwt
 import hashlib
-from pydantic import BaseModel
 from typing import Optional
 
-SECRET_KEY = "super_secret_key_movie_recommender"  # In production, use environment variable
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super_secret_key_movie_recommender")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 REFRESH_TOKEN_EXPIRE_DAYS = 30
@@ -49,16 +52,14 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:32]
 
 
-def create_session_record(db, user_id: int, token: str, ip_address: str = None, user_agent: str = None):
-    """Create a session record in the database."""
+def create_session_record(db, user_id, token: str, ip_address: str = None, user_agent: str = None):
+    """Create a session record in MongoDB."""
     import models
-    session = models.UserSession(
+    session_doc = models.new_session_doc(
         user_id=user_id,
         token_hash=hash_token(token),
         ip_address=ip_address,
         user_agent=user_agent,
     )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session
+    db["user_sessions"].insert_one(session_doc)
+    return session_doc

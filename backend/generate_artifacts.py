@@ -6,6 +6,9 @@ import pickle
 import nltk
 from nltk.stem.porter import PorterStemmer
 import faiss
+from hf_utils import get_dataset_file
+from nltk.stem.porter import PorterStemmer
+import faiss
 
 try:
     nltk.data.find('tokenizers/punkt')
@@ -66,8 +69,8 @@ ps = PorterStemmer()
 
 def main():
     print("Loading TMDB data...")
-    movies = pd.read_csv('data/tmdb_5000_movies.csv')
-    credits = pd.read_csv('data/tmdb_5000_credits.csv')
+    movies = pd.read_csv(get_dataset_file('tmdb_5000_movies.csv'))
+    credits = pd.read_csv(get_dataset_file('tmdb_5000_credits.csv'))
     tmdb = movies.merge(credits, on='title')
     
     tmdb['genres_list'] = tmdb['genres'].apply(convert)
@@ -95,7 +98,7 @@ def main():
     })
     
     print("Loading Bollywood data...")
-    bolly = pd.read_csv('data/bollywoodmovies.csv')
+    bolly = pd.read_csv(get_dataset_file('bollywoodmovies.csv'))
     bolly['genres_list'] = bolly['genres'].fillna('').apply(lambda x: x.split('|'))
     bolly['genres_c'] = bolly['genres_list'].apply(collapse)
     bolly['cast_c'] = bolly['actors'].fillna('').apply(lambda x: x.split('|')).apply(collapse)
@@ -119,7 +122,7 @@ def main():
     bolly_df = bolly_df.dropna(subset=['movie_id', 'title', 'tags'])
 
     print("Loading Anime data...")
-    anime = pd.read_csv('data/anime-dataset-2023.csv')
+    anime = pd.read_csv(get_dataset_file('anime-dataset-2023.csv'))
     anime['genres_list'] = anime['Genres'].fillna('').apply(lambda x: [g.strip() for g in x.split(',')])
     anime['genres_c'] = anime['genres_list'].apply(collapse)
     anime['overview_c'] = anime['Synopsis'].fillna('').apply(lambda x: x.split())

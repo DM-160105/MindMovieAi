@@ -1,26 +1,56 @@
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+from pymongo import MongoClient
 
-# ─── PostgreSQL Connection ─────────────────────────────────────────────────────
-# Format: postgresql://user:password@host:port/database
-# Reads from environment variable DATABASE_URL, falls back to local default
-SQLALCHEMY_DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://devang-makwana@localhost:5432/stremflix"
+load_dotenv()
+
+# ─── MongoDB Connection ────────────────────────────────────────────────────────
+MONGODB_URI = os.getenv(
+    "MONGODB_URI",
+    "mongodb://localhost:27017/stremflix"
 )
 
-# PostgreSQL does NOT need check_same_thread
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+client = MongoClient(MONGODB_URI)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Extract database name from URI or use default
+_db_name = MONGODB_URI.rsplit("/", 1)[-1].split("?")[0] if "/" in MONGODB_URI else "stremflix"
+db = client[_db_name]
 
-Base = declarative_base()
+# ─── Collection References ──────────────────────────────────────────────────────
+# These mirror the old SQLAlchemy table names
+USERS = db["users"]
+RATINGS = db["ratings"]
+MOVIE_REVIEWS = db["movie_reviews"]
+SEARCH_HISTORY = db["search_history"]
+USER_ACTIVITIES = db["user_activities"]
+USER_SESSIONS = db["user_sessions"]
+FAVORITES = db["favorites"]
+WATCHLIST = db["watchlist"]
+YOUTUBE_COMMENTS = db["youtube_comments"]
+
+# ─── Indexes (created once, safe to call repeatedly) ────────────────────────────
+def ensure_indexes():
+    """Create MongoDB indexes for fast queries."""
+    USERS.create_index("username", unique=True)
+    USERS.create_index("email", unique=True, sparse=True)
+    RATINGS.create_index([("user_id", 1), ("movie_id", 1)])
+    MOVIE_REVIEWS.create_index("movie_title")
+    MOVIE_REVIEWS.create_index("user_id")
+    SEARCH_HISTORY.create_index("user_id")
+    USER_ACTIVITIES.create_index("user_id")
+    USER_ACTIVITIES.create_index("activity_type")
+    USER_SESSIONS.create_index("user_id")
+    USER_SESSIONS.create_index("token_hash")
+    FAVORITES.create_index([("user_id", 1), ("movie_title", 1)], unique=True)
+    WATCHLIST.create_index([("user_id", 1), ("movie_title", 1)], unique=True)
+    YOUTUBE_COMMENTS.create_index("video_title")
+    YOUTUBE_COMMENTS.create_index("video_id")
+    YOUTUBE_COMMENTS.create_index("user_id")
+
+ensure_indexes()
+
 
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    """Returns the MongoDB database object. 
+    For FastAPI dependency injection compatibility."""
+    return db

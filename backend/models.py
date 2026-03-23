@@ -1,142 +1,171 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Boolean
-from sqlalchemy.orm import relationship
+"""
+MongoDB-compatible model definitions using Pydantic.
+These replace the old SQLAlchemy ORM models.
+Each model has a to_dict() helper for API serialization.
+"""
 import datetime
-from database import Base
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from bson import ObjectId
 
 
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=True)
-    display_name = Column(String, nullable=True)
-    avatar_url = Column(String, nullable=True)
-    hashed_password = Column(String)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    is_active = Column(Boolean, default=True)
-    is_admin = Column(Boolean, default=False)
-    onboarding_completed = Column(Boolean, default=False)
-    age = Column(Integer, nullable=True)
-    gender = Column(String, nullable=True)
-    favorite_genres = Column(String, nullable=True)   # comma-separated liked genres
-    disliked_genres = Column(String, nullable=True)   # comma-separated disliked genres
-    movie_sources = Column(String, nullable=True)     # e.g. "hollywood,bollywood,anime"
-
-    ratings = relationship("Rating", back_populates="owner")
-    search_history = relationship("SearchHistory", back_populates="owner")
-    activities = relationship("UserActivity", back_populates="owner")
-    sessions = relationship("UserSession", back_populates="owner")
-    favorites = relationship("Favorite", back_populates="owner")
-    watchlist = relationship("Watchlist", back_populates="owner")
-    reviews = relationship("MovieReview", back_populates="owner")
-    yt_comments = relationship("YoutubeComment", back_populates="owner")
+# ─── Collection Name Constants ──────────────────────────────────────────────────
+USERS_COLLECTION = "users"
+RATINGS_COLLECTION = "ratings"
+MOVIE_REVIEWS_COLLECTION = "movie_reviews"
+SEARCH_HISTORY_COLLECTION = "search_history"
+USER_ACTIVITIES_COLLECTION = "user_activities"
+USER_SESSIONS_COLLECTION = "user_sessions"
+FAVORITES_COLLECTION = "favorites"
+WATCHLIST_COLLECTION = "watchlist"
+YOUTUBE_COMMENTS_COLLECTION = "youtube_comments"
 
 
-class Rating(Base):
-    __tablename__ = "ratings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    movie_id = Column(Integer, index=True)
-    movie_title = Column(String)
-    rating = Column(Float)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="ratings")
-
-
-class MovieReview(Base):
-    __tablename__ = "movie_reviews"
-
-    id = Column(Integer, primary_key=True, index=True)
-    movie_title = Column(String, index=True)
-    review_text = Column(Text)
-    sentiment_label = Column(String, nullable=True)       # "positive" | "negative" | "neutral"
-    sentiment_confidence = Column(Float, nullable=True)   # 0.0 – 1.0
-    sentiment_score = Column(Float, nullable=True)        # raw score
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="reviews")
+# ─── Helper ─────────────────────────────────────────────────────────────────────
+def serialize_doc(doc: dict) -> dict:
+    """Convert MongoDB document to JSON-serializable dict."""
+    if doc is None:
+        return None
+    doc = dict(doc)
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    # Convert datetime objects to ISO strings for JSON
+    for key, val in doc.items():
+        if isinstance(val, datetime.datetime):
+            doc[key] = val.isoformat()
+        elif isinstance(val, ObjectId):
+            doc[key] = str(val)
+    return doc
 
 
-class SearchHistory(Base):
-    __tablename__ = "search_history"
-
-    id = Column(Integer, primary_key=True, index=True)
-    query = Column(String, index=True)
-    results_count = Column(Integer, default=0)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="search_history")
-
-
-class UserActivity(Base):
-    __tablename__ = "user_activities"
-
-    id = Column(Integer, primary_key=True, index=True)
-    activity_type = Column(String, index=True)  # "page_view", "movie_click", "search", "recommendation_click"
-    page_url = Column(String, nullable=True)
-    movie_title = Column(String, nullable=True)
-    extra_data = Column(Text, nullable=True)        # JSON string
-    duration_seconds = Column(Integer, nullable=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="activities")
+def new_user_doc(
+    username: str,
+    hashed_password: str,
+    email: str = None,
+    display_name: str = None,
+) -> dict:
+    """Create a new user document for MongoDB insertion."""
+    return {
+        "username": username,
+        "email": email,
+        "display_name": display_name or username,
+        "avatar_url": None,
+        "hashed_password": hashed_password,
+        "created_at": datetime.datetime.utcnow(),
+        "is_active": True,
+        "is_admin": False,
+        "onboarding_completed": False,
+        "age": None,
+        "gender": None,
+        "favorite_genres": None,
+        "disliked_genres": None,
+        "movie_sources": None,
+    }
 
 
-class UserSession(Base):
-    __tablename__ = "user_sessions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    token_hash = Column(String, index=True)
-    login_at = Column(DateTime, default=datetime.datetime.utcnow)
-    last_active = Column(DateTime, default=datetime.datetime.utcnow)
-    ip_address = Column(String, nullable=True)
-    user_agent = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="sessions")
+def new_rating_doc(user_id, movie_id: int, movie_title: str, rating: float) -> dict:
+    return {
+        "user_id": user_id,
+        "movie_id": movie_id,
+        "movie_title": movie_title,
+        "rating": rating,
+        "timestamp": datetime.datetime.utcnow(),
+    }
 
 
-class Favorite(Base):
-    __tablename__ = "favorites"
-
-    id = Column(Integer, primary_key=True, index=True)
-    movie_title = Column(String, index=True)
-    poster_url = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="favorites")
-
-
-class Watchlist(Base):
-    __tablename__ = "watchlist"
-
-    id = Column(Integer, primary_key=True, index=True)
-    movie_title = Column(String, index=True)
-    poster_url = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
-
-    owner = relationship("User", back_populates="watchlist")
+def new_review_doc(user_id, movie_title: str, review_text: str,
+                   sentiment_label=None, sentiment_confidence=None, sentiment_score=None) -> dict:
+    return {
+        "user_id": user_id,
+        "movie_title": movie_title,
+        "review_text": review_text,
+        "sentiment_label": sentiment_label,
+        "sentiment_confidence": sentiment_confidence,
+        "sentiment_score": sentiment_score,
+        "timestamp": datetime.datetime.utcnow(),
+    }
 
 
-class YoutubeComment(Base):
-    __tablename__ = "youtube_comments"
+def new_search_doc(user_id, query: str, results_count: int = 0) -> dict:
+    return {
+        "user_id": user_id,
+        "query": query,
+        "results_count": results_count,
+        "timestamp": datetime.datetime.utcnow(),
+    }
 
-    id = Column(Integer, primary_key=True, index=True)
-    video_title = Column(String, index=True)
-    video_id = Column(String, nullable=True, index=True)
-    text = Column(Text, nullable=False)
-    sentiment_label = Column(String, nullable=True)   # positive | negative | neutral
-    sentiment_score = Column(Float, nullable=True)    # confidence 0.0-1.0
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id"))
 
-    owner = relationship("User", back_populates="yt_comments")
+def new_activity_doc(user_id, activity_type: str, page_url=None,
+                     movie_title=None, extra_data=None, duration_seconds=None) -> dict:
+    return {
+        "user_id": user_id,
+        "activity_type": activity_type,
+        "page_url": page_url,
+        "movie_title": movie_title,
+        "extra_data": extra_data,
+        "duration_seconds": duration_seconds,
+        "timestamp": datetime.datetime.utcnow(),
+    }
+
+
+def new_session_doc(user_id, token_hash: str, ip_address=None, user_agent=None) -> dict:
+    return {
+        "user_id": user_id,
+        "token_hash": token_hash,
+        "login_at": datetime.datetime.utcnow(),
+        "last_active": datetime.datetime.utcnow(),
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+        "is_active": True,
+    }
+
+
+def new_favorite_doc(user_id, movie_title: str, poster_url=None) -> dict:
+    return {
+        "user_id": user_id,
+        "movie_title": movie_title,
+        "poster_url": poster_url,
+        "timestamp": datetime.datetime.utcnow(),
+    }
+
+
+def new_watchlist_doc(user_id, movie_title: str, poster_url=None) -> dict:
+    return {
+        "user_id": user_id,
+        "movie_title": movie_title,
+        "poster_url": poster_url,
+        "timestamp": datetime.datetime.utcnow(),
+    }
+
+
+def new_youtube_comment_doc(user_id, video_title: str, text: str,
+                            video_id=None, sentiment_label=None, sentiment_score=None) -> dict:
+    return {
+        "user_id": user_id,
+        "video_title": video_title,
+        "video_id": video_id,
+        "text": text,
+        "sentiment_label": sentiment_label,
+        "sentiment_score": sentiment_score,
+        "timestamp": datetime.datetime.utcnow(),
+    }
+
+
+def user_to_dict(user_doc: dict) -> dict:
+    """Convert a user MongoDB document to a safe API response dict."""
+    if user_doc is None:
+        return None
+    return {
+        "id": str(user_doc.get("_id", "")),
+        "username": user_doc.get("username"),
+        "email": user_doc.get("email"),
+        "display_name": user_doc.get("display_name"),
+        "avatar_url": user_doc.get("avatar_url"),
+        "created_at": user_doc["created_at"].isoformat() if isinstance(user_doc.get("created_at"), datetime.datetime) else user_doc.get("created_at"),
+        "onboarding_completed": user_doc.get("onboarding_completed", False),
+        "favorite_genres": user_doc.get("favorite_genres"),
+        "disliked_genres": user_doc.get("disliked_genres"),
+        "movie_sources": user_doc.get("movie_sources"),
+        "age": user_doc.get("age"),
+        "gender": user_doc.get("gender"),
+    }

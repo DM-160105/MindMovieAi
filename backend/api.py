@@ -12,12 +12,14 @@ from typing import List, Optional
 import sys
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 
-from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi import Depends
 
-from database import SessionLocal, engine, get_db
+load_dotenv()
+
+from database import get_db, db as mongodb
 import models
 import auth
 
@@ -30,15 +32,11 @@ import ml.user_preference as user_preference
 import ml.youtube_ml as youtube_ml
 import ml.dl_recommender as dl_recommender
 
-# Create database tables (safe for existing DBs)
-models.Base.metadata.create_all(bind=engine)
-
-
-# NOTE: migrate_db() removed — PostgreSQL uses create_all() which handles all schema creation.
-# SQLite-specific AUTOINCREMENT syntax is not valid in PostgreSQL.
+# ─── Environment Variables ──────────────────────────────────────────────────────
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "8265bd1679663a7ea12ac168da84d2e8")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-# Optional auth — doesn't raise 401, just returns None
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
 def get_base_path():
@@ -53,9 +51,14 @@ BASE_DIR = get_base_path()
 
 app = FastAPI(title="Movie Recommender API")
 
+allowed_origins = [
+    FRONTEND_URL,
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,7 +68,6 @@ app.add_middleware(
 try:
     movies_dict = pickle.load(open(os.path.join(BASE_DIR, 'artifacts', 'movie_dict.pkl'), 'rb'))
     movies = pd.DataFrame(movies_dict)
-    # Precompute title_lower for fast O(1)/vectorized lookups during personalized recommendations
     if 'title' in movies.columns:
         movies['title_lower'] = movies['title'].astype(str).str.lower()
     index = faiss.read_index(os.path.join(BASE_DIR, 'artifacts', 'movies.index'))
@@ -106,7 +108,7 @@ def fetch_poster(row):
         return str(poster_url).strip()
         
     if origin == 'tmdb' and pd.notna(movie_id):
-        url = "https://api.themoviedb.org/3/movie/{}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US".format(movie_id)
+        url = "https://api.themoviedb.org/3/movie/{}?api_key={}&language=en-US".format(movie_id, TMDB_API_KEY)
         try:
             data = requests.get(url, timeout=5)
             if data.status_code == 200:
@@ -148,16 +150,10 @@ class PreferencesUpdate(BaseModel):
     display_name: Optional[str] = None
     age: Optional[int] = None
     gender: Optional[str] = None
-    # Accept either a comma-separated string OR a list from the frontend
     favorite_genres: Optional[str] = None
     disliked_genres: Optional[str] = None
-    movie_sources: Optional[str] = None   # e.g. "hollywood,bollywood,anime"
+    movie_sources: Optional[str] = None
     onboarding_completed: bool = True
-
-    class Config:
-        # Allow list values to be auto-coerced to comma-separated strings
-        json_encoders = {list: lambda v: ','.join(v) if v else None}
-
 
 class ReviewCreate(BaseModel):
     movie_title: str
@@ -191,7 +187,7 @@ class SentimentPredictRequest(BaseModel):
     text: str
 
 class ActivityTrackRequest(BaseModel):
-    activity_type: str  # "page_view", "movie_click", "search", "recommendation_click"
+    activity_type: str
     page_url: Optional[str] = None
     movie_title: Optional[str] = None
     extra_data: Optional[str] = None
@@ -211,9 +207,9 @@ class YoutubeCommentCreate(BaseModel):
     text: str
 
 
-# ─── Auth Helpers ───
+# ─── Auth Helpers (MongoDB) ───
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
@@ -226,12 +222,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
     except auth.jwt.PyJWTError:
         raise credentials_exception
-    user = db.query(models.User).filter(models.User.username == username).first()
+    user = db["users"].find_one({"username": username})
     if user is None:
         raise credentials_exception
     return user
 
-def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optional), db: Session = Depends(get_db)):
+def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optional), db=Depends(get_db)):
     """Returns user if authenticated, None otherwise."""
     if token is None:
         return None
@@ -240,27 +236,10 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optio
         username: str = payload.get("sub")
         if username is None:
             return None
-        user = db.query(models.User).filter(models.User.username == username).first()
+        user = db["users"].find_one({"username": username})
         return user
     except:
         return None
-
-def user_to_dict(user: models.User) -> dict:
-    """Convert user model to a dict for API responses."""
-    return {
-        "id": user.id,
-        "username": user.username,
-        "email": user.email,
-        "display_name": user.display_name,
-        "avatar_url": user.avatar_url,
-        "created_at": user.created_at.isoformat() if user.created_at else None,
-        "onboarding_completed": getattr(user, "onboarding_completed", False),
-        "favorite_genres": getattr(user, "favorite_genres", None),
-        "disliked_genres": getattr(user, "disliked_genres", None),
-        "movie_sources": getattr(user, "movie_sources", None),
-        "age": getattr(user, "age", None),
-        "gender": getattr(user, "gender", None),
-    }
 
 
 # ═══════════════════════════════════════════════════
@@ -275,33 +254,31 @@ def read_root():
 # ─── AUTH ENDPOINTS ───
 
 @app.post("/register")
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+def register(user: UserCreate, db=Depends(get_db)):
+    db_user = db["users"].find_one({"username": user.username})
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
     
     if user.email:
-        db_email = db.query(models.User).filter(models.User.email == user.email).first()
+        db_email = db["users"].find_one({"email": user.email})
         if db_email:
             raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = auth.get_password_hash(user.password)
-    new_user = models.User(
+    new_user = models.new_user_doc(
         username=user.username,
         hashed_password=hashed_password,
         email=user.email,
         display_name=user.display_name or user.username,
     )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    result = db["users"].insert_one(new_user)
+    new_user["_id"] = result.inserted_id
     
-    # Auto-generate token for immediate login
-    access_token = auth.create_access_token(data={"sub": new_user.username, "user_id": new_user.id})
+    access_token = auth.create_access_token(data={"sub": new_user["username"], "user_id": str(new_user["_id"])})
     
     return {
         "message": "User registered successfully",
-        "user": user_to_dict(new_user),
+        "user": models.user_to_dict(new_user),
         "access_token": access_token,
         "token_type": "bearer"
     }
@@ -311,60 +288,59 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 def login_for_access_token(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    db=Depends(get_db)
 ):
-    user = db.query(models.User).filter(models.User.username == form_data.username).first()
-    if not user or not auth.verify_password(form_data.password, user.hashed_password):
+    user = db["users"].find_one({"username": form_data.username})
+    if not user or not auth.verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
     
     access_token_expires = auth.timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = auth.create_access_token(
-        data={"sub": user.username, "user_id": user.id},
+        data={"sub": user["username"], "user_id": str(user["_id"])},
         expires_delta=access_token_expires
     )
     
-    # Create session record
     try:
         ip_address = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent", None)
-        auth.create_session_record(db, user.id, access_token, ip_address, user_agent)
+        auth.create_session_record(db, user["_id"], access_token, ip_address, user_agent)
     except Exception as e:
         print(f"Warning: Could not create session record: {e}")
     
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": user_to_dict(user)
+        "user": models.user_to_dict(user)
     }
 
 
 @app.get("/me")
-def get_current_user_profile(current_user: models.User = Depends(get_current_user)):
-    """Returns the currently authenticated user's profile."""
-    return {"user": user_to_dict(current_user)}
+def get_current_user_profile(current_user=Depends(get_current_user)):
+    return {"user": models.user_to_dict(current_user)}
 
 
 @app.put("/me")
 def update_user_profile(
     update: UserUpdate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Update the currently authenticated user's profile."""
+    update_fields = {}
     if update.email is not None:
-        current_user.email = update.email
+        update_fields["email"] = update.email
     if update.display_name is not None:
-        current_user.display_name = update.display_name
+        update_fields["display_name"] = update.display_name
     if update.avatar_url is not None:
-        current_user.avatar_url = update.avatar_url
+        update_fields["avatar_url"] = update.avatar_url
     
-    db.commit()
-    db.refresh(current_user)
-    return {"user": user_to_dict(current_user), "message": "Profile updated successfully"}
+    if update_fields:
+        db["users"].update_one({"_id": current_user["_id"]}, {"$set": update_fields})
+    
+    updated_user = db["users"].find_one({"_id": current_user["_id"]})
+    return {"user": models.user_to_dict(updated_user), "message": "Profile updated successfully"}
 
 
-def _save_preferences(prefs: PreferencesUpdate, current_user: models.User, db: Session):
-    """Shared logic for saving preferences — handles list->CSV coercion."""
+def _save_preferences(prefs: PreferencesUpdate, current_user: dict, db):
     def to_csv(v):
         if v is None:
             return None
@@ -372,43 +348,44 @@ def _save_preferences(prefs: PreferencesUpdate, current_user: models.User, db: S
             return ','.join(str(x) for x in v)
         return str(v)
 
+    update_fields = {}
     if prefs.display_name is not None:
-        current_user.display_name = prefs.display_name
+        update_fields["display_name"] = prefs.display_name
     if prefs.age is not None:
-        current_user.age = prefs.age
+        update_fields["age"] = prefs.age
     if prefs.gender is not None:
-        current_user.gender = prefs.gender
+        update_fields["gender"] = prefs.gender
     if prefs.favorite_genres is not None:
-        current_user.favorite_genres = to_csv(prefs.favorite_genres)
+        update_fields["favorite_genres"] = to_csv(prefs.favorite_genres)
     if prefs.disliked_genres is not None:
-        current_user.disliked_genres = to_csv(prefs.disliked_genres)
+        update_fields["disliked_genres"] = to_csv(prefs.disliked_genres)
     if prefs.movie_sources is not None:
-        current_user.movie_sources = to_csv(prefs.movie_sources)
-    current_user.onboarding_completed = prefs.onboarding_completed
-    db.commit()
-    db.refresh(current_user)
+        update_fields["movie_sources"] = to_csv(prefs.movie_sources)
+    update_fields["onboarding_completed"] = prefs.onboarding_completed
+    
+    db["users"].update_one({"_id": current_user["_id"]}, {"$set": update_fields})
 
 
 @app.put("/me/preferences")
 def update_user_preferences_put(
     prefs: PreferencesUpdate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Save the user's wizard preferences (PUT)."""
     _save_preferences(prefs, current_user, db)
-    return {"user": user_to_dict(current_user), "message": "Preferences saved."}
+    updated = db["users"].find_one({"_id": current_user["_id"]})
+    return {"user": models.user_to_dict(updated), "message": "Preferences saved."}
 
 
 @app.post("/me/preferences")
 def update_user_preferences_post(
     prefs: PreferencesUpdate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Save the user's wizard preferences (POST — alias for PUT)."""
     _save_preferences(prefs, current_user, db)
-    return {"user": user_to_dict(current_user), "message": "Preferences saved."}
+    updated = db["users"].find_one({"_id": current_user["_id"]})
+    return {"user": models.user_to_dict(updated), "message": "Preferences saved."}
 
 
 # ─── ACTIVITY TRACKING ───
@@ -416,87 +393,81 @@ def update_user_preferences_post(
 @app.post("/track-activity")
 def track_activity(
     activity: ActivityTrackRequest,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Log user activity (page views, movie clicks, etc.)."""
-    new_activity = models.UserActivity(
-        user_id=current_user.id,
+    new_activity = models.new_activity_doc(
+        user_id=current_user["_id"],
         activity_type=activity.activity_type,
         page_url=activity.page_url,
         movie_title=activity.movie_title,
         extra_data=activity.extra_data,
         duration_seconds=activity.duration_seconds,
     )
-    db.add(new_activity)
+    db["user_activities"].insert_one(new_activity)
     
-    # If it's a search activity, also add to search history
     if activity.activity_type == "search" and activity.extra_data:
         try:
             search_data = json.loads(activity.extra_data)
-            search_record = models.SearchHistory(
-                user_id=current_user.id,
+            search_record = models.new_search_doc(
+                user_id=current_user["_id"],
                 query=search_data.get("query", ""),
                 results_count=search_data.get("results_count", 0),
             )
-            db.add(search_record)
+            db["search_history"].insert_one(search_record)
         except (json.JSONDecodeError, AttributeError):
             pass
     
-    db.commit()
     return {"message": "Activity tracked"}
 
 
 @app.post("/track-search")
 def track_search(
     search: SearchTrackRequest,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Log a search query."""
-    record = models.SearchHistory(
-        user_id=current_user.id,
+    record = models.new_search_doc(
+        user_id=current_user["_id"],
         query=search.query,
         results_count=search.results_count,
     )
-    db.add(record)
-    db.commit()
+    db["search_history"].insert_one(record)
     return {"message": "Search tracked"}
 
 
 @app.get("/user-history")
 def get_user_history(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Returns the user's search and activity history."""
-    searches = db.query(models.SearchHistory).filter(
-        models.SearchHistory.user_id == current_user.id
-    ).order_by(models.SearchHistory.timestamp.desc()).limit(50).all()
+    searches = list(db["search_history"].find(
+        {"user_id": current_user["_id"]}
+    ).sort("timestamp", -1).limit(50))
     
-    activities = db.query(models.UserActivity).filter(
-        models.UserActivity.user_id == current_user.id
-    ).order_by(models.UserActivity.timestamp.desc()).limit(50).all()
+    activities = list(db["user_activities"].find(
+        {"user_id": current_user["_id"]}
+    ).sort("timestamp", -1).limit(50))
     
-    sessions = db.query(models.UserSession).filter(
-        models.UserSession.user_id == current_user.id
-    ).order_by(models.UserSession.login_at.desc()).limit(10).all()
+    sessions = list(db["user_sessions"].find(
+        {"user_id": current_user["_id"]}
+    ).sort("login_at", -1).limit(10))
     
     return {
         "searches": [
-            {"id": s.id, "query": s.query, "results_count": s.results_count,
-             "timestamp": s.timestamp.isoformat() if s.timestamp else None}
+            {"id": str(s["_id"]), "query": s.get("query"), "results_count": s.get("results_count"),
+             "timestamp": s["timestamp"].isoformat() if s.get("timestamp") else None}
             for s in searches
         ],
         "activities": [
-            {"id": a.id, "type": a.activity_type, "page_url": a.page_url,
-             "movie_title": a.movie_title, "duration_seconds": a.duration_seconds,
-             "timestamp": a.timestamp.isoformat() if a.timestamp else None}
+            {"id": str(a["_id"]), "type": a.get("activity_type"), "page_url": a.get("page_url"),
+             "movie_title": a.get("movie_title"), "duration_seconds": a.get("duration_seconds"),
+             "timestamp": a["timestamp"].isoformat() if a.get("timestamp") else None}
             for a in activities
         ],
         "sessions": [
-            {"id": s.id, "login_at": s.login_at.isoformat() if s.login_at else None,
-             "ip_address": s.ip_address, "user_agent": s.user_agent, "is_active": s.is_active}
+            {"id": str(s["_id"]), "login_at": s["login_at"].isoformat() if s.get("login_at") else None,
+             "ip_address": s.get("ip_address"), "user_agent": s.get("user_agent"), "is_active": s.get("is_active")}
             for s in sessions
         ],
     }
@@ -506,19 +477,15 @@ def get_user_history(
 
 @app.get("/predict-preferences")
 def predict_user_preferences(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Predict user's preferred genres based on their activity and ratings."""
-    # Get user's ratings
-    ratings = db.query(models.Rating).filter(models.Rating.user_id == current_user.id).all()
-    ratings_list = [{"movie_title": r.movie_title, "rating": r.rating} for r in ratings]
+    ratings = list(db["ratings"].find({"user_id": current_user["_id"]}))
+    ratings_list = [{"movie_title": r.get("movie_title"), "rating": r.get("rating")} for r in ratings]
     
-    # Get user's searches
-    searches = db.query(models.SearchHistory).filter(models.SearchHistory.user_id == current_user.id).all()
-    search_queries = [s.query for s in searches]
+    searches = list(db["search_history"].find({"user_id": current_user["_id"]}))
+    search_queries = [s.get("query") for s in searches]
     
-    # Run prediction
     result = user_preference.predict_preferences(ratings_list, search_queries, movies)
     return result
 
@@ -527,12 +494,7 @@ def predict_user_preferences(
 
 @app.post("/sentiment-predict")
 def predict_sentiment(request: SentimentPredictRequest):
-    """
-    Run sentiment analysis on input text using both TensorFlow and PyTorch models.
-    Returns predictions from both models for comparison.
-    """
     import subprocess
-    import json
     
     text = request.text.strip()
     if not text:
@@ -540,7 +502,6 @@ def predict_sentiment(request: SentimentPredictRequest):
     
     results = {"input_text": text, "models": {}}
     
-    # TensorFlow prediction via isolated subprocess (prevents Mac libc++abi aborts from crashing FastAPI)
     try:
         py_script = f"""
 import json
@@ -556,13 +517,11 @@ sys.exit(0)
         proc = subprocess.run(["python3", "-c", py_script], capture_output=True, text=True, timeout=10)
         
         if proc.returncode != 0:
-            # Native crash (e.g. 134 on Mac)
             results["models"]["tensorflow"] = {
                 "error": "TensorFlow aborted natively (common on macOS arm64). Using fallback."
             }
         else:
             try:
-                # Find JSON output
                 for line in proc.stdout.splitlines():
                     if line.startswith('{'):
                         tf_result = json.loads(line)
@@ -576,7 +535,6 @@ sys.exit(0)
     except Exception as e:
         results["models"]["tensorflow"] = {"error": str(e)}
     
-    # PyTorch prediction (Now safe and isolated from TF)
     try:
         from ml.sentiment_torch import predict_sentiment_torch
         torch_result = predict_sentiment_torch(text)
@@ -584,7 +542,6 @@ sys.exit(0)
     except Exception as e:
         results["models"]["pytorch"] = {"error": str(e)}
     
-    # Combined verdict
     tf_label = results["models"].get("tensorflow", {}).get("label", "unknown")
     pt_label = results["models"].get("pytorch", {}).get("label", "unknown")
     
@@ -598,70 +555,70 @@ sys.exit(0)
     return results
 
 
-# ─── EXISTING ENDPOINTS (unchanged) ───
+# ─── RATING ───
 
 @app.post("/rate")
-def rate_movie(rating: RatingCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if fake_engagement.is_user_fake(current_user.id):
+def rate_movie(rating: RatingCreate, current_user=Depends(get_current_user), db=Depends(get_db)):
+    if fake_engagement.is_user_fake(str(current_user["_id"])):
         raise HTTPException(status_code=403, detail="Your account has been flagged for anomalous rating behavior.")
         
-    db_rating = db.query(models.Rating).filter(
-        models.Rating.user_id == current_user.id,
-        models.Rating.movie_id == rating.movie_id
-    ).first()
+    db_rating = db["ratings"].find_one({
+        "user_id": current_user["_id"],
+        "movie_id": rating.movie_id
+    })
 
     if db_rating:
-        db_rating.rating = rating.rating
-        db.commit()
-        db.refresh(db_rating)
-        return {"message": "Rating updated", "rating": db_rating}
+        db["ratings"].update_one(
+            {"_id": db_rating["_id"]},
+            {"$set": {"rating": rating.rating}}
+        )
+        return {"message": "Rating updated"}
     else:
-        new_rating = models.Rating(
+        new_rating = models.new_rating_doc(
+            user_id=current_user["_id"],
             movie_id=rating.movie_id,
             movie_title=rating.movie_title,
             rating=rating.rating,
-            user_id=current_user.id
         )
-        db.add(new_rating)
-        db.commit()
-        db.refresh(new_rating)
-        return {"message": "Rating added", "rating": new_rating}
+        db["ratings"].insert_one(new_rating)
+        return {"message": "Rating added"}
 
 @app.get("/user-ratings")
-def get_user_ratings(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    ratings = db.query(models.Rating).filter(models.Rating.user_id == current_user.id).all()
-    return {"ratings": ratings}
+def get_user_ratings(current_user=Depends(get_current_user), db=Depends(get_db)):
+    ratings = list(db["ratings"].find({"user_id": current_user["_id"]}))
+    return {"ratings": [models.serialize_doc(r) for r in ratings]}
 
 @app.post("/admin/train-engagement")
-def train_engagement_model(db: Session = Depends(get_db)):
-    ratings = db.query(models.Rating).all()
+def train_engagement_model(db=Depends(get_db)):
+    ratings = list(db["ratings"].find())
     if not ratings:
         return {"message": "Not enough ratings in database to train engagement model."}
         
-    df = pd.DataFrame([{"user_id": r.user_id, "rating": r.rating} for r in ratings])
+    df = pd.DataFrame([{"user_id": str(r["user_id"]), "rating": r["rating"]} for r in ratings])
     success = fake_engagement.train_fake_engagement_model(df)
     if success:
         return {"message": "Engagement model successfully trained on current ratings data."}
     else:
         return {"message": "Failed to train engagement model."}
 
+
+# ─── MOVIES (no DB changes needed, these use DataFrame) ───
+
 @app.get("/movies")
 def get_movies(
     limit: int = 24,
     offset: int = 0,
-    search: Optional[str] = None,    # keyword search on title + tags
+    search: Optional[str] = None,
     genre: Optional[str] = None,
     genres: Optional[str] = None,
-    sources: Optional[str] = None,   # comma-separated: "bollywood,hollywood,anime"
+    sources: Optional[str] = None,
     min_rating: Optional[float] = None,
     max_rating: Optional[float] = None,
     start_year: Optional[int] = None,
     end_year: Optional[int] = None
 ):
-    """Get paginated movies, optionally filtered by search keyword and advanced options."""
     df = movies.copy()
 
-    # ── Keyword search ──
     if search and search.strip():
         q = search.strip().lower()
         title_match = df['title'].str.contains(q, case=False, na=False)
@@ -682,7 +639,6 @@ def get_movies(
             
         df = match_df
 
-    # ── Source filtering ──
     if sources:
         source_list = [s.strip().lower() for s in sources.split(",")]
         origin_map = {"hollywood": "tmdb", "bollywood": "bollywood", "anime": "anime"}
@@ -690,27 +646,23 @@ def get_movies(
         if allowed_origins:
             df = df[df['origin'].isin(allowed_origins)]
 
-    # ── Genre filtering (single) ──
     if genre and genre != "All":
         df = df[
             df['tags'].str.contains(genre, case=False, na=False) |
             df['genres_list'].apply(lambda g: genre in g if isinstance(g, list) else False)
         ]
 
-    # ── Genre filtering (multiple, comma-separated) ──
     if genres:
         selected_genres = [g.strip() for g in genres.split(",")]
         df = df[df['genres_list'].apply(
             lambda gl: any(g in gl for g in selected_genres) if isinstance(gl, list) else False
         )]
 
-    # ── Rating filter ──
     if min_rating is not None and 'vote_average' in df.columns:
         df = df[df['vote_average'] >= min_rating]
     if max_rating is not None and 'vote_average' in df.columns:
         df = df[df['vote_average'] <= max_rating]
 
-    # ── Year filter ──
     if start_year is not None and 'release_date' in df.columns:
         df['year_tmp'] = pd.to_datetime(df['release_date'], errors='coerce').dt.year
         df = df[df['year_tmp'] >= start_year]
@@ -721,7 +673,6 @@ def get_movies(
     if 'year_tmp' in df.columns:
         df = df.drop(columns=['year_tmp'])
 
-    # ── Sort ──
     if 'vote_average' in df.columns:
         df = df.sort_values(by='vote_average', ascending=False)
 
@@ -756,11 +707,6 @@ class BatchMoviesRequest(BaseModel):
 
 @app.post("/movies/batch")
 def get_movies_batch(request: BatchMoviesRequest):
-    """
-    N×N Parallel FAISS-backed batch movie loader.
-    Accepts a list of movie titles and returns their full details in parallel
-    using a ThreadPoolExecutor for maximum throughput.
-    """
     if not request.titles:
         return {"movies": []}
 
@@ -783,7 +729,6 @@ def get_movies_batch(request: BatchMoviesRequest):
             "origin": row.get('origin'),
         }
 
-    # N×N parallel load using ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=min(len(request.titles), 32)) as executor:
         results = list(executor.map(load_one, request.titles))
 
@@ -911,12 +856,14 @@ def analyze_movie_poster(request: PosterAnalysisRequest):
     results = poster_classifier.analyze_poster_genres(request.image_url)
     return results
 
+
+# ─── DL RECOMMENDATIONS ───
+
 @app.get("/recommend/dl")
 def get_dl_recommendations_endpoint(
-    current_user: models.User = Depends(get_current_user_optional),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_optional),
+    db=Depends(get_db)
 ):
-    """Deep learning personalized recommendations based on user activity (legacy)."""
     user_data = {"likes_count": 10, "views_count": 50}
     dl_scores = dl_recommender.get_dl_recommendations(user_data, top_k=3)
     top_genres = [g["genre"] for g in dl_scores]
@@ -947,110 +894,78 @@ def get_dl_recommendations_endpoint(
 @app.get("/recommend/personalized")
 def get_personalized_recommendations(
     limit: int = 28,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """
-    Full personalized movie recommendations using Deep Learning.
-    Uses user profile (age, gender, liked/disliked genres, movie_sources)
-    + full activity history (ratings, searches, movie clicks) to score genres
-    via the UserActivityMLP PyTorch model, then filters and re-ranks the movie catalog.
-    """
-    # ── Gather user profile ──
-    age = getattr(current_user, 'age', None)
-    gender = getattr(current_user, 'gender', None)
-    fav_genres_str = getattr(current_user, 'favorite_genres', '') or ''
-    dis_genres_str = getattr(current_user, 'disliked_genres', '') or ''
-    movie_sources_str = getattr(current_user, 'movie_sources', '') or ''
+    age = current_user.get('age')
+    gender = current_user.get('gender')
+    fav_genres_str = current_user.get('favorite_genres', '') or ''
+    dis_genres_str = current_user.get('disliked_genres', '') or ''
+    movie_sources_str = current_user.get('movie_sources', '') or ''
 
     favorite_genres = [g.strip() for g in fav_genres_str.split(',') if g.strip()]
     disliked_genres = [g.strip() for g in dis_genres_str.split(',') if g.strip()]
     preferred_sources = [s.strip().lower() for s in movie_sources_str.split(',') if s.strip()]
 
-    # ── Gather activity history from DB ──
-    ratings_db = db.query(models.Rating).filter(models.Rating.user_id == current_user.id).all()
-    ratings = [{"movie_title": r.movie_title, "rating": r.rating} for r in ratings_db]
+    ratings_db = list(db["ratings"].find({"user_id": current_user["_id"]}))
+    ratings = [{"movie_title": r.get("movie_title"), "rating": r.get("rating")} for r in ratings_db]
 
-    searches_db = db.query(models.SearchHistory).filter(
-        models.SearchHistory.user_id == current_user.id
-    ).order_by(models.SearchHistory.timestamp.desc()).limit(100).all()
-    searches = [s.query for s in searches_db]
+    searches_db = list(db["search_history"].find(
+        {"user_id": current_user["_id"]}
+    ).sort("timestamp", -1).limit(100))
+    searches = [s.get("query") for s in searches_db]
 
-    clicks_db = db.query(models.UserActivity).filter(
-        models.UserActivity.user_id == current_user.id,
-        models.UserActivity.activity_type == 'movie_click'
-    ).order_by(models.UserActivity.timestamp.desc()).limit(200).all()
-    clicked_movies = [c.movie_title for c in clicks_db if c.movie_title]
+    clicks_db = list(db["user_activities"].find(
+        {"user_id": current_user["_id"], "activity_type": "movie_click"}
+    ).sort("timestamp", -1).limit(200))
+    clicked_movies = [c.get("movie_title") for c in clicks_db if c.get("movie_title")]
 
-    fav_db = db.query(models.Favorite).filter(models.Favorite.user_id == current_user.id).all()
-    favorites = [f.movie_title for f in fav_db if f.movie_title]
+    fav_db = list(db["favorites"].find({"user_id": current_user["_id"]}))
+    favorites = [f.get("movie_title") for f in fav_db if f.get("movie_title")]
     
-    watchlist_db = db.query(models.Watchlist).filter(models.Watchlist.user_id == current_user.id).all()
-    watchlist = [w.movie_title for w in watchlist_db if w.movie_title]
+    watchlist_db = list(db["watchlist"].find({"user_id": current_user["_id"]}))
+    watchlist_items = [w.get("movie_title") for w in watchlist_db if w.get("movie_title")]
 
-    # ── Run DL model ──
     dl_genre_scores = dl_recommender.get_dl_recommendations_full(
-        age=age,
-        gender=gender,
-        favorite_genres=favorite_genres,
-        disliked_genres=disliked_genres,
-        ratings=ratings,
-        searches=searches,
-        clicked_movies=clicked_movies,
-        favorites=favorites,
-        watchlist=watchlist,
-        movies_df=movies,
-        top_k=8,
+        age=age, gender=gender, favorite_genres=favorite_genres,
+        disliked_genres=disliked_genres, ratings=ratings, searches=searches,
+        clicked_movies=clicked_movies, favorites=favorites, watchlist=watchlist_items,
+        movies_df=movies, top_k=8,
     )
     top_genres = [g["genre"] for g in dl_genre_scores]
 
-    # ── Filter movie catalog ──
     df = movies.copy()
 
-    # Apply source preference if set
     if preferred_sources:
         origin_map = {"hollywood": "tmdb", "bollywood": "bollywood", "anime": "anime"}
-        allowed_origins = [origin_map[s] for s in preferred_sources if s in origin_map]
-        if allowed_origins:
-            df = df[df['origin'].isin(allowed_origins)]
+        allowed_origins_list = [origin_map[s] for s in preferred_sources if s in origin_map]
+        if allowed_origins_list:
+            df = df[df['origin'].isin(allowed_origins_list)]
 
-    # Remove disliked genres
     if disliked_genres:
         def not_disliked(genres_list):
-            if not isinstance(genres_list, list):
-                return True
+            if not isinstance(genres_list, list): return True
             return not any(g in disliked_genres for g in genres_list)
         df = df[df['genres_list'].apply(not_disliked)]
 
-    # Exclude already-rated movies (user has seen them) using precomputed title_lower
     rated_titles_lower = {r['movie_title'].lower() for r in ratings}
     if 'title_lower' in df.columns:
         df = df[~df['title_lower'].isin(rated_titles_lower)]
     else:
         df = df[~df['title'].str.lower().isin(rated_titles_lower)]
 
-    # ── Score each movie by DL genre preference ──
     genre_score_map = {g['genre']: g['score'] for g in dl_genre_scores}
-
     df = df.copy()
-    
-    # Vectorized scoring instead of slow df.apply(axis=1)
     vote_averages = df['vote_average'].fillna(5.0).values
     genres_lists = df['genres_list'].values
-    
-    # Compute dl_boost efficiently via list comprehension
     dl_boosts = np.array([
         sum(genre_score_map.get(g, 0.0) for g in gl) if isinstance(gl, list) else 0.0
         for gl in genres_lists
     ])
-    
-    # Vectorized score calculation (Weighted: 40% quality, 60% personalization)
     base_scores = vote_averages / 10.0
     df['_score'] = base_scores * 0.4 + dl_boosts * 0.6
-    
     df = df.sort_values('_score', ascending=False)
 
-    # ── Build response ──
     personalized = df.head(limit)
     
     def process_row(row):
@@ -1067,7 +982,6 @@ def get_personalized_recommendations(
             "origin": row.get('origin'),
         }
     
-    # Fetch posters concurrently to avoid massive sequential API overheads
     with ThreadPoolExecutor(max_workers=min(limit, 32)) as executor:
         results = list(executor.map(process_row, [row for _, row in personalized.iterrows()]))
 
@@ -1081,12 +995,9 @@ def get_personalized_recommendations(
         "profile_strength": profile_strength,
         "top_genres": top_genres,
         "user_info": {
-            "age": age,
-            "gender": gender,
-            "favorite_genres": favorite_genres,
-            "disliked_genres": disliked_genres,
-            "ratings_count": len(ratings),
-            "searches_count": len(searches),
+            "age": age, "gender": gender,
+            "favorite_genres": favorite_genres, "disliked_genres": disliked_genres,
+            "ratings_count": len(ratings), "searches_count": len(searches),
         },
     }
 
@@ -1131,17 +1042,14 @@ def get_movie_details(title: str):
     origin = row_main['origin']
 
     def parse_json(val):
-        if pd.isna(val):
-            return []
-        try:
-            return json.loads(val)
+        if pd.isna(val): return []
+        try: return json.loads(val)
         except (json.JSONDecodeError, TypeError):
             try:
                 import ast
                 val_ast = ast.literal_eval(val)
                 if isinstance(val_ast, list): return val_ast
-            except:
-                pass
+            except: pass
             return []
 
     if origin == 'tmdb' and tmdb_full_data is not None:
@@ -1157,21 +1065,14 @@ def get_movie_details(title: str):
             languages = [l['name'] for l in parse_json(row.get('spoken_languages', '[]'))]
             companies = [c['name'] for c in parse_json(row.get('production_companies', '[]'))]
             keywords = [k['name'] for k in parse_json(row.get('keywords', '[]'))]
-
             movie_id = int(row['id']) if pd.notna(row.get('id')) else None
             poster = fetch_poster(row_main)
-
             release_date = str(row['release_date']) if pd.notna(row.get('release_date')) else None
             year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
-
             return {
-                "title": str(row['title']),
-                "overview": str(row['overview']) if pd.notna(row.get('overview')) else None,
+                "title": str(row['title']), "overview": str(row['overview']) if pd.notna(row.get('overview')) else None,
                 "tagline": str(row['tagline']) if pd.notna(row.get('tagline')) else None,
-                "poster": poster,
-                "poster_url": poster,
-                "year": year,
-                "release_date": release_date,
+                "poster": poster, "poster_url": poster, "year": year, "release_date": release_date,
                 "rating": float(row['vote_average']) if pd.notna(row.get('vote_average')) else None,
                 "vote_average": float(row['vote_average']) if pd.notna(row.get('vote_average')) else None,
                 "vote_count": int(row['vote_count']) if pd.notna(row.get('vote_count')) else None,
@@ -1181,13 +1082,9 @@ def get_movie_details(title: str):
                 "popularity": float(row['popularity']) if pd.notna(row.get('popularity')) else None,
                 "status": str(row['status']) if pd.notna(row.get('status')) else None,
                 "original_language": str(row['original_language']) if pd.notna(row.get('original_language')) else None,
-                "genres": genres,
-                "cast": cast,
-                "director": director,
-                "production_countries": countries,
-                "spoken_languages": languages,
-                "production_companies": companies,
-                "keywords": keywords[:10],
+                "genres": genres, "cast": cast, "director": director,
+                "production_countries": countries, "spoken_languages": languages,
+                "production_companies": companies, "keywords": keywords[:10],
             }
 
     if origin == 'anime' and anime_df_full is not None:
@@ -1197,26 +1094,17 @@ def get_movie_details(title: str):
             anime_poster = fetch_poster(row_main)
             anime_rating = float(row['Score']) if pd.notna(row.get('Score')) and str(row['Score']) != 'UNKNOWN' else None
             return {
-                "title": str(row['Name']),
-                "overview": str(row['Synopsis']) if pd.notna(row.get('Synopsis')) else None,
-                "tagline": None,
-                "poster": anime_poster,
-                "poster_url": anime_poster,
+                "title": str(row['Name']), "overview": str(row['Synopsis']) if pd.notna(row.get('Synopsis')) else None,
+                "tagline": None, "poster": anime_poster, "poster_url": anime_poster,
                 "year": int(row_main['year']) if pd.notna(row_main['year']) else None,
                 "release_date": str(row['Aired']) if pd.notna(row.get('Aired')) else None,
-                "rating": anime_rating,
-                "vote_average": anime_rating,
+                "rating": anime_rating, "vote_average": anime_rating,
                 "vote_count": int(float(row['Scored By'])) if pd.notna(row.get('Scored By')) and str(row['Scored By']) != 'UNKNOWN' else None,
-                "runtime": None,
-                "budget": None,
-                "revenue": None,
-                "popularity": None,
+                "runtime": None, "budget": None, "revenue": None, "popularity": None,
                 "status": str(row['Status']) if pd.notna(row.get('Status')) else None,
                 "original_language": "Japanese",
                 "genres": [g.strip() for g in str(row.get('Genres', '')).split(',')] if pd.notna(row.get('Genres')) and str(row.get('Genres')) != 'UNKNOWN' else [],
-                "cast": [],
-                "director": None,
-                "production_countries": ["Japan"],
+                "cast": [], "director": None, "production_countries": ["Japan"],
                 "spoken_languages": ["Japanese"],
                 "production_companies": [g.strip() for g in str(row.get('Studios', '')).split(',')] if pd.notna(row.get('Studios')) and str(row.get('Studios')) != 'UNKNOWN' else [],
                 "keywords": [],
@@ -1230,53 +1118,41 @@ def get_movie_details(title: str):
             bolly_rating = float(row['imdb_rating']) if pd.notna(row.get('imdb_rating')) else None
             cast = [{"name": c.strip(), "character": "", "order": i} for i, c in enumerate(str(row.get('actors', '')).split('|'))] if pd.notna(row.get('actors')) else []
             return {
-                "title": str(row['title_x']),
-                "overview": str(row['story']) if pd.notna(row.get('story')) else None,
+                "title": str(row['title_x']), "overview": str(row['story']) if pd.notna(row.get('story')) else None,
                 "tagline": str(row['tagline']) if pd.notna(row.get('tagline')) else None,
-                "poster": bolly_poster,
-                "poster_url": bolly_poster,
+                "poster": bolly_poster, "poster_url": bolly_poster,
                 "year": int(row_main['year']) if pd.notna(row_main['year']) else None,
                 "release_date": str(row['release_date']) if pd.notna(row.get('release_date')) else None,
-                "rating": bolly_rating,
-                "vote_average": bolly_rating,
+                "rating": bolly_rating, "vote_average": bolly_rating,
                 "vote_count": int(float(row['imdb_votes'])) if pd.notna(row.get('imdb_votes')) and str(row['imdb_votes']) != 'nan' else None,
                 "runtime": int(row['runtime']) if pd.notna(row.get('runtime')) else None,
-                "budget": None,
-                "revenue": None,
-                "popularity": None,
-                "status": "Released",
+                "budget": None, "revenue": None, "popularity": None, "status": "Released",
                 "original_language": "Hindi",
                 "genres": str(row['genres']).split('|') if pd.notna(row.get('genres')) else [],
-                "cast": cast[:12],
-                "director": None,
-                "production_countries": ["India"],
-                "spoken_languages": ["Hindi"],
-                "production_companies": [],
-                "keywords": [],
+                "cast": cast[:12], "director": None, "production_countries": ["India"],
+                "spoken_languages": ["Hindi"], "production_companies": [], "keywords": [],
             }
 
     fallback_poster = fetch_poster(row_main)
     return {
-        "title": str(row_main['title']),
-        "overview": None,
-        "poster": fallback_poster,
-        "poster_url": fallback_poster,
+        "title": str(row_main['title']), "overview": None,
+        "poster": fallback_poster, "poster_url": fallback_poster,
         "year": int(row_main['year']) if pd.notna(row_main['year']) else None,
         "rating": float(row_main['vote_average']) if pd.notna(row_main['vote_average']) else None,
         "vote_average": float(row_main['vote_average']) if pd.notna(row_main['vote_average']) else None,
         "genres": row_main['genres_list'] if isinstance(row_main['genres_list'], list) else [],
-        "vote_count": None,
-        "runtime": None,
+        "vote_count": None, "runtime": None,
     }
 
-# ─── FAVORITES & WATCHLIST ───
+
+# ─── FAVORITES & WATCHLIST (MongoDB) ───
 
 @app.post("/favorites")
-def add_favorite(item: MovieItemCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    existing = db.query(models.Favorite).filter(
-        models.Favorite.user_id == current_user.id,
-        models.Favorite.movie_title == item.movie_title
-    ).first()
+def add_favorite(item: MovieItemCreate, current_user=Depends(get_current_user), db=Depends(get_db)):
+    existing = db["favorites"].find_one({
+        "user_id": current_user["_id"],
+        "movie_title": item.movie_title
+    })
     if existing:
         return {"message": "Already in favorites"}
     
@@ -1288,38 +1164,33 @@ def add_favorite(item: MovieItemCreate, current_user: models.User = Depends(get_
         if not match.empty:
             poster_url = fetch_poster(match.iloc[0])
 
-    new_fav = models.Favorite(
-        user_id=current_user.id,
+    new_fav = models.new_favorite_doc(
+        user_id=current_user["_id"],
         movie_title=item.movie_title,
-        poster_url=poster_url
+        poster_url=poster_url,
     )
-    db.add(new_fav)
-    db.commit()
-    db.refresh(new_fav)
-    return {"message": "Added to favorites", "favorite": new_fav}
+    db["favorites"].insert_one(new_fav)
+    return {"message": "Added to favorites", "favorite": models.serialize_doc(new_fav)}
 
 @app.get("/favorites")
-def get_favorites(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    favs = db.query(models.Favorite).filter(models.Favorite.user_id == current_user.id).order_by(models.Favorite.timestamp.desc()).all()
-    return {"favorites": favs}
+def get_favorites(current_user=Depends(get_current_user), db=Depends(get_db)):
+    favs = list(db["favorites"].find({"user_id": current_user["_id"]}).sort("timestamp", -1))
+    return {"favorites": [models.serialize_doc(f) for f in favs]}
 
 @app.delete("/favorites/{movie_title}")
-def remove_favorite(movie_title: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    fav = db.query(models.Favorite).filter(
-        models.Favorite.user_id == current_user.id,
-        models.Favorite.movie_title == movie_title
-    ).first()
-    if fav:
-        db.delete(fav)
-        db.commit()
+def remove_favorite(movie_title: str, current_user=Depends(get_current_user), db=Depends(get_db)):
+    db["favorites"].delete_one({
+        "user_id": current_user["_id"],
+        "movie_title": movie_title
+    })
     return {"message": "Removed from favorites"}
 
 @app.post("/watchlist")
-def add_watchlist(item: MovieItemCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    existing = db.query(models.Watchlist).filter(
-        models.Watchlist.user_id == current_user.id,
-        models.Watchlist.movie_title == item.movie_title
-    ).first()
+def add_watchlist(item: MovieItemCreate, current_user=Depends(get_current_user), db=Depends(get_db)):
+    existing = db["watchlist"].find_one({
+        "user_id": current_user["_id"],
+        "movie_title": item.movie_title
+    })
     if existing:
         return {"message": "Already in watchlist"}
     
@@ -1331,119 +1202,102 @@ def add_watchlist(item: MovieItemCreate, current_user: models.User = Depends(get
         if not match.empty:
             poster_url = fetch_poster(match.iloc[0])
 
-    new_watch = models.Watchlist(
-        user_id=current_user.id,
+    new_watch = models.new_watchlist_doc(
+        user_id=current_user["_id"],
         movie_title=item.movie_title,
-        poster_url=poster_url
+        poster_url=poster_url,
     )
-    db.add(new_watch)
-    db.commit()
-    db.refresh(new_watch)
-    return {"message": "Added to watchlist", "watchlist": new_watch}
+    db["watchlist"].insert_one(new_watch)
+    return {"message": "Added to watchlist", "watchlist": models.serialize_doc(new_watch)}
 
 @app.get("/watchlist")
-def get_watchlist(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    items = db.query(models.Watchlist).filter(models.Watchlist.user_id == current_user.id).order_by(models.Watchlist.timestamp.desc()).all()
-    return {"watchlist": items}
+def get_watchlist(current_user=Depends(get_current_user), db=Depends(get_db)):
+    items = list(db["watchlist"].find({"user_id": current_user["_id"]}).sort("timestamp", -1))
+    return {"watchlist": [models.serialize_doc(w) for w in items]}
 
 @app.delete("/watchlist/{movie_title}")
-def remove_watchlist(movie_title: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    item = db.query(models.Watchlist).filter(
-        models.Watchlist.user_id == current_user.id,
-        models.Watchlist.movie_title == movie_title
-    ).first()
-    if item:
-        db.delete(item)
-        db.commit()
+def remove_watchlist(movie_title: str, current_user=Depends(get_current_user), db=Depends(get_db)):
+    db["watchlist"].delete_one({
+        "user_id": current_user["_id"],
+        "movie_title": movie_title
+    })
     return {"message": "Removed from watchlist"}
+
 
 # ─── YOUTUBE & VIDEO ML ───
 
 @app.post("/youtube/analyze")
-def analyze_youtube_video(req: YouTubeAnalyzeRequest):
+def analyze_youtube_video_post(req: YouTubeAnalyzeRequest):
     comments_data = [{"text": c.text, "author": c.author} for c in req.comments]
-    sentiment_analysis = youtube_ml.analyze_comments(comments_data)
+    sentiment_result = youtube_ml.analyze_comments(comments_data)
     engagement_analysis = youtube_ml.detect_fake_engagement(req.views, req.likes, req.comments_count)
     return {
-        "sentiment_analysis": sentiment_analysis,
+        "sentiment_analysis": sentiment_result,
         "fake_engagement": engagement_analysis
     }
-
 
 @app.get("/youtube/recommend")
 def get_youtube_recommendations(video_title: str, region: Optional[str] = None):
     recs = youtube_ml.recommend_videos(video_title, num_recommendations=12, region=region)
     return {"recommendations": recs}
 
-
 @app.get("/youtube/video-data")
 def get_youtube_video_data(video_title: str):
-    """Get real dataset stats for a given video title."""
     stats = youtube_ml.get_video_stats(video_title)
     return stats or {"title": video_title, "views": 0, "likes": 0, "comment_count": 0}
 
-
 @app.get("/youtube/comments")
-def get_youtube_comments(video_title: str, db: Session = Depends(get_db),
+def get_youtube_comments(video_title: str, db=Depends(get_db),
                          sentiment: Optional[str] = None,
                          limit: int = 100, offset: int = 0):
-    """Get all user comments for a specific video (public endpoint)."""
-    query = db.query(models.YoutubeComment).filter(
-        models.YoutubeComment.video_title == video_title
-    )
+    query_filter = {"video_title": video_title}
     if sentiment and sentiment in ("positive", "negative", "neutral"):
-        query = query.filter(models.YoutubeComment.sentiment_label == sentiment)
-    total = query.count()
-    comments = query.order_by(models.YoutubeComment.timestamp.desc()).offset(offset).limit(limit).all()
+        query_filter["sentiment_label"] = sentiment
+    total = db["youtube_comments"].count_documents(query_filter)
+    comments = list(db["youtube_comments"].find(query_filter).sort("timestamp", -1).skip(offset).limit(limit))
     result = []
     for c in comments:
         author = "Anonymous"
         avatar_letter = "A"
-        if c.owner:
-            author = c.owner.display_name or c.owner.username or "Anonymous"
+        owner = db["users"].find_one({"_id": c.get("user_id")})
+        if owner:
+            author = owner.get("display_name") or owner.get("username") or "Anonymous"
             avatar_letter = author[0].upper()
         result.append({
-            "id": c.id,
-            "video_title": c.video_title,
-            "text": c.text,
-            "sentiment_label": c.sentiment_label,
-            "sentiment_score": c.sentiment_score,
+            "id": str(c["_id"]),
+            "video_title": c.get("video_title"),
+            "text": c.get("text"),
+            "sentiment_label": c.get("sentiment_label"),
+            "sentiment_score": c.get("sentiment_score"),
             "author": author,
             "avatar_letter": avatar_letter,
-            "user_id": c.user_id,
-            "timestamp": c.timestamp.isoformat() if c.timestamp else None,
+            "user_id": str(c.get("user_id")),
+            "timestamp": c["timestamp"].isoformat() if c.get("timestamp") else None,
         })
     # Sentiment summary
-    all_c = db.query(models.YoutubeComment).filter(models.YoutubeComment.video_title == video_title).all()
-    pos = sum(1 for c in all_c if c.sentiment_label == "positive")
-    neg = sum(1 for c in all_c if c.sentiment_label == "negative")
-    neu = sum(1 for c in all_c if c.sentiment_label == "neutral")
+    all_c = list(db["youtube_comments"].find({"video_title": video_title}))
+    pos = sum(1 for c in all_c if c.get("sentiment_label") == "positive")
+    neg = sum(1 for c in all_c if c.get("sentiment_label") == "negative")
+    neu = sum(1 for c in all_c if c.get("sentiment_label") == "neutral")
     tot = len(all_c)
     return {
-        "comments": result,
-        "total": total,
+        "comments": result, "total": total,
         "sentiment_summary": {
-            "total": tot,
-            "positive": pos,
-            "negative": neg,
-            "neutral": neu,
+            "total": tot, "positive": pos, "negative": neg, "neutral": neu,
             "positive_pct": round(pos / tot * 100, 1) if tot else 0,
             "negative_pct": round(neg / tot * 100, 1) if tot else 0,
             "neutral_pct": round(neu / tot * 100, 1) if tot else 0,
         }
     }
 
-
 @app.post("/youtube/comments")
 def post_youtube_comment(
     comment: YoutubeCommentCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Post a comment on a YouTube video; sentiment auto-classified."""
     if not comment.text.strip():
         raise HTTPException(status_code=400, detail="Comment text cannot be empty.")
-    # Classify sentiment
     try:
         sentiment_result = youtube_ml.classify_comment_sentiment(comment.text)
         sentiment_label = sentiment_result.get("label", "neutral")
@@ -1451,30 +1305,28 @@ def post_youtube_comment(
     except Exception:
         sentiment_label = "neutral"
         sentiment_score = 0.5
-    new_comment = models.YoutubeComment(
+    new_comment = models.new_youtube_comment_doc(
+        user_id=current_user["_id"],
         video_title=comment.video_title,
         video_id=comment.video_id,
         text=comment.text.strip(),
         sentiment_label=sentiment_label,
         sentiment_score=sentiment_score,
-        user_id=current_user.id,
     )
-    db.add(new_comment)
-    db.commit()
-    db.refresh(new_comment)
-    author = current_user.display_name or current_user.username
+    db["youtube_comments"].insert_one(new_comment)
+    author = current_user.get("display_name") or current_user.get("username")
     return {
         "message": "Comment posted",
         "comment": {
-            "id": new_comment.id,
-            "video_title": new_comment.video_title,
-            "text": new_comment.text,
-            "sentiment_label": new_comment.sentiment_label,
-            "sentiment_score": new_comment.sentiment_score,
+            "id": str(new_comment["_id"]),
+            "video_title": new_comment["video_title"],
+            "text": new_comment["text"],
+            "sentiment_label": new_comment["sentiment_label"],
+            "sentiment_score": new_comment["sentiment_score"],
             "author": author,
             "avatar_letter": author[0].upper() if author else "A",
-            "user_id": current_user.id,
-            "timestamp": new_comment.timestamp.isoformat() if new_comment.timestamp else None,
+            "user_id": str(current_user["_id"]),
+            "timestamp": new_comment["timestamp"].isoformat() if new_comment.get("timestamp") else None,
         }
     }
 
@@ -1484,15 +1336,12 @@ def post_youtube_comment(
 @app.post("/reviews")
 def create_review(
     review: ReviewCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db=Depends(get_db)
 ):
-    """Post a review for a movie; sentiment is analyzed automatically."""
     sentiment_label = None
     sentiment_confidence = None
     sentiment_score = None
-
-    # Run quick PyTorch sentiment on review text
     try:
         from ml.sentiment_torch import predict_sentiment_torch
         result = predict_sentiment_torch(review.review_text)
@@ -1502,67 +1351,54 @@ def create_review(
     except Exception as e:
         print(f"Sentiment analysis failed: {e}")
 
-    new_review = models.MovieReview(
-        user_id=current_user.id,
+    new_review = models.new_review_doc(
+        user_id=current_user["_id"],
         movie_title=review.movie_title,
         review_text=review.review_text,
         sentiment_label=sentiment_label,
         sentiment_confidence=sentiment_confidence,
         sentiment_score=sentiment_score,
     )
-    db.add(new_review)
-    db.commit()
-    db.refresh(new_review)
-
+    db["movie_reviews"].insert_one(new_review)
     return {
         "message": "Review posted",
         "review": {
-            "id": new_review.id,
-            "movie_title": new_review.movie_title,
-            "review_text": new_review.review_text,
-            "sentiment_label": new_review.sentiment_label,
-            "sentiment_confidence": new_review.sentiment_confidence,
-            "author": current_user.display_name or current_user.username,
-            "timestamp": new_review.timestamp.isoformat() if new_review.timestamp else None,
+            "id": str(new_review["_id"]),
+            "movie_title": new_review["movie_title"],
+            "review_text": new_review["review_text"],
+            "sentiment_label": new_review["sentiment_label"],
+            "sentiment_confidence": new_review.get("sentiment_confidence"),
+            "author": current_user.get("display_name") or current_user.get("username"),
+            "timestamp": new_review["timestamp"].isoformat() if new_review.get("timestamp") else None,
         }
     }
 
-
 @app.get("/reviews")
-def get_movie_reviews(movie_title: str, db: Session = Depends(get_db)):
-    """Get all reviews for a specific movie."""
-    reviews = db.query(models.MovieReview).filter(
-        models.MovieReview.movie_title == movie_title
-    ).order_by(models.MovieReview.timestamp.desc()).all()
-
+def get_movie_reviews_list(movie_title: str, db=Depends(get_db)):
+    reviews = list(db["movie_reviews"].find({"movie_title": movie_title}).sort("timestamp", -1))
     result = []
     for r in reviews:
+        owner = db["users"].find_one({"_id": r.get("user_id")})
         author = "Anonymous"
-        if r.owner:
-            author = r.owner.display_name or r.owner.username or "Anonymous"
+        if owner:
+            author = owner.get("display_name") or owner.get("username") or "Anonymous"
         result.append({
-            "id": r.id,
-            "movie_title": r.movie_title,
-            "review_text": r.review_text,
-            "sentiment_label": r.sentiment_label,
-            "sentiment_confidence": r.sentiment_confidence,
+            "id": str(r["_id"]),
+            "movie_title": r.get("movie_title"),
+            "review_text": r.get("review_text"),
+            "sentiment_label": r.get("sentiment_label"),
+            "sentiment_confidence": r.get("sentiment_confidence"),
             "author": author,
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "timestamp": r["timestamp"].isoformat() if r.get("timestamp") else None,
         })
-
-    # Compute aggregate sentiment
     total = len(result)
     positive = sum(1 for r in result if r["sentiment_label"] == "positive")
     negative = sum(1 for r in result if r["sentiment_label"] == "negative")
     neutral = total - positive - negative
-
     return {
-        "reviews": result,
-        "total": total,
+        "reviews": result, "total": total,
         "sentiment_summary": {
-            "positive": positive,
-            "negative": negative,
-            "neutral": neutral,
+            "positive": positive, "negative": negative, "neutral": neutral,
             "positive_pct": round((positive / total * 100) if total > 0 else 0, 1),
         }
     }
@@ -1571,212 +1407,159 @@ def get_movie_reviews(movie_title: str, db: Session = Depends(get_db)):
 # ─── YOUTUBE VIDEOS LISTING ───
 
 @app.get("/youtube/videos")
-def get_youtube_videos(
-    limit: int = 24,
-    offset: int = 0,
-    search: Optional[str] = None,
-    region: Optional[str] = None,
-    category: Optional[str] = None,
+def get_youtube_videos_list(
+    limit: int = 24, offset: int = 0,
+    search: Optional[str] = None, region: Optional[str] = None, category: Optional[str] = None,
 ):
-    """Returns paginated YouTube videos from the real dataset, with TF-IDF search."""
-    result = youtube_ml.get_videos_page(
-        limit=limit, offset=offset,
-        search=search, region=region, category=category
-    )
+    result = youtube_ml.get_videos_page(limit=limit, offset=offset, search=search, region=region, category=category)
     return result
 
 
-# ─── ADMIN PANEL ───
+# ─── ADMIN PANEL (MongoDB) ───
 
-def require_admin(current_user: models.User = Depends(get_current_user)):
-    if not (current_user.username == "admin" or getattr(current_user, "is_admin", False)):
+def require_admin(current_user=Depends(get_current_user)):
+    if not (current_user.get("username") == "admin" or current_user.get("is_admin", False)):
         raise HTTPException(status_code=403, detail="Admin access required.")
     return current_user
 
-
 @app.get("/admin/stats")
-def admin_stats(
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+def admin_stats(_=Depends(require_admin), db=Depends(get_db)):
     import datetime as dt
     today = dt.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    total_users = db.query(models.User).count()
-    new_today = db.query(models.User).filter(models.User.created_at >= today).count()
-    total_activities = db.query(models.UserActivity).count()
-    total_ratings = db.query(models.Rating).count()
-    total_reviews = db.query(models.MovieReview).count()
-    total_comments = db.query(models.YoutubeComment).count()
-    total_sessions = db.query(models.UserSession).count()
+    total_users = db["users"].count_documents({})
+    new_today = db["users"].count_documents({"created_at": {"$gte": today}})
+    total_activities = db["user_activities"].count_documents({})
+    total_ratings = db["ratings"].count_documents({})
+    total_reviews = db["movie_reviews"].count_documents({})
+    total_comments = db["youtube_comments"].count_documents({})
+    total_sessions = db["user_sessions"].count_documents({})
     return {
-        "total_users": total_users,
-        "new_users_today": new_today,
-        "total_activities": total_activities,
-        "total_ratings": total_ratings,
-        "total_reviews": total_reviews,
-        "total_youtube_comments": total_comments,
+        "total_users": total_users, "new_users_today": new_today,
+        "total_activities": total_activities, "total_ratings": total_ratings,
+        "total_reviews": total_reviews, "total_youtube_comments": total_comments,
         "total_sessions": total_sessions,
     }
 
-
 @app.get("/admin/users")
 def admin_users(
-    limit: int = 100,
-    offset: int = 0,
-    email: Optional[str] = None,
-    name: Optional[str] = None,
-    gender: Optional[str] = None,
-    age: Optional[int] = None,
+    limit: int = 100, offset: int = 0,
+    email: Optional[str] = None, name: Optional[str] = None,
+    gender: Optional[str] = None, age: Optional[int] = None,
     sort_by: Optional[str] = None,
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    _=Depends(require_admin), db=Depends(get_db)
 ):
-    from sqlalchemy import func
-    query = db.query(models.User)
-    
+    query_filter = {}
     if email:
-        query = query.filter(models.User.email.ilike(f"%{email}%"))
+        query_filter["email"] = {"$regex": email, "$options": "i"}
     if name:
-        query = query.filter(models.User.display_name.ilike(f"%{name}%"))
+        query_filter["display_name"] = {"$regex": name, "$options": "i"}
     if gender:
-        query = query.filter(models.User.gender.ilike(gender))
+        query_filter["gender"] = {"$regex": f"^{gender}$", "$options": "i"}
     if age is not None:
-        query = query.filter(models.User.age == age)
+        query_filter["age"] = age
         
-    total = query.count()
+    total = db["users"].count_documents(query_filter)
+    users = list(db["users"].find(query_filter).sort("_id", -1).skip(offset).limit(limit))
     
-    if sort_by == 'most_clicked':
-        query = query.outerjoin(models.UserActivity).group_by(models.User.id).order_by(func.count(models.UserActivity.id).desc())
-    elif sort_by == 'most_favorite':
-        query = query.outerjoin(models.Favorite).group_by(models.User.id).order_by(func.count(models.Favorite.id).desc())
-    elif sort_by == 'most_watchlist':
-        query = query.outerjoin(models.Watchlist).group_by(models.User.id).order_by(func.count(models.Watchlist.id).desc())
-    else:
-        query = query.order_by(models.User.id.desc())
-
-    users = query.offset(offset).limit(limit).all()
     result = []
     for u in users:
-        # Compute session stats
-        sessions = db.query(models.UserSession).filter(models.UserSession.user_id == u.id).all()
+        uid = u["_id"]
+        sessions = list(db["user_sessions"].find({"user_id": uid}))
         last_login = None
         total_session_mins = 0
         if sessions:
-            login_times = [s.login_at for s in sessions if s.login_at]
+            login_times = [s["login_at"] for s in sessions if s.get("login_at")]
             if login_times:
                 last_login = max(login_times).isoformat()
             for s in sessions:
-                if s.last_active and s.login_at:
-                    delta = (s.last_active - s.login_at).total_seconds() / 60
+                if s.get("last_active") and s.get("login_at"):
+                    delta = (s["last_active"] - s["login_at"]).total_seconds() / 60
                     total_session_mins += max(0, delta)
-        # Activity counts
-        activity_count = db.query(models.UserActivity).filter(models.UserActivity.user_id == u.id).count()
-        rating_count = db.query(models.Rating).filter(models.Rating.user_id == u.id).count()
-        fav_count = db.query(models.Favorite).filter(models.Favorite.user_id == u.id).count()
-        wl_count = db.query(models.Watchlist).filter(models.Watchlist.user_id == u.id).count()
-        comment_count = db.query(models.YoutubeComment).filter(models.YoutubeComment.user_id == u.id).count()
+        activity_count = db["user_activities"].count_documents({"user_id": uid})
+        rating_count = db["ratings"].count_documents({"user_id": uid})
+        fav_count = db["favorites"].count_documents({"user_id": uid})
+        wl_count = db["watchlist"].count_documents({"user_id": uid})
+        comment_count = db["youtube_comments"].count_documents({"user_id": uid})
         result.append({
-            "id": u.id,
-            "username": u.username,
-            "display_name": u.display_name,
-            "email": u.email,
-            "gender": getattr(u, "gender", None),
-            "age": getattr(u, "age", None),
-            "favorite_genres": getattr(u, "favorite_genres", None),
-            "is_admin": getattr(u, "is_admin", False),
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-            "last_login": last_login,
-            "total_session_mins": round(total_session_mins, 1),
-            "session_count": len(sessions),
-            "activity_count": activity_count,
-            "rating_count": rating_count,
-            "favorites_count": fav_count,
-            "watchlist_count": wl_count,
-            "comment_count": comment_count,
+            "id": str(uid), "username": u.get("username"),
+            "display_name": u.get("display_name"), "email": u.get("email"),
+            "gender": u.get("gender"), "age": u.get("age"),
+            "favorite_genres": u.get("favorite_genres"),
+            "is_admin": u.get("is_admin", False),
+            "created_at": u["created_at"].isoformat() if u.get("created_at") else None,
+            "last_login": last_login, "total_session_mins": round(total_session_mins, 1),
+            "session_count": len(sessions), "activity_count": activity_count,
+            "rating_count": rating_count, "favorites_count": fav_count,
+            "watchlist_count": wl_count, "comment_count": comment_count,
         })
     return {"users": result, "total": total}
 
-
 @app.get("/admin/activities")
 def admin_activities(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = 200, offset: int = 0,
     activity_type: Optional[str] = None,
-    email: Optional[str] = None,
-    name: Optional[str] = None,
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    email: Optional[str] = None, name: Optional[str] = None,
+    _=Depends(require_admin), db=Depends(get_db)
 ):
-    query = db.query(models.UserActivity).join(models.User, models.UserActivity.user_id == models.User.id)
+    pipeline = []
+    match_stage = {}
     if activity_type:
-        query = query.filter(models.UserActivity.activity_type == activity_type)
-    if email:
-        query = query.filter(models.User.email.ilike(f"%{email}%"))
-    if name:
-        query = query.filter(models.User.display_name.ilike(f"%{name}%"))
-        
-    total = query.count()
-    activities = query.order_by(models.UserActivity.timestamp.desc()).offset(offset).limit(limit).all()
+        match_stage["activity_type"] = activity_type
+    if match_stage:
+        pipeline.append({"$match": match_stage})
+    pipeline.append({"$sort": {"timestamp": -1}})
+    pipeline.append({"$skip": offset})
+    pipeline.append({"$limit": limit})
+    
+    activities = list(db["user_activities"].aggregate(pipeline))
+    total = db["user_activities"].count_documents(match_stage if match_stage else {})
     result = []
     for a in activities:
         user_name = "Anonymous"
-        if a.owner:
-            user_name = a.owner.display_name or a.owner.username or "Anonymous"
+        owner = db["users"].find_one({"_id": a.get("user_id")})
+        if owner:
+            user_name = owner.get("display_name") or owner.get("username") or "Anonymous"
         result.append({
-            "id": a.id,
-            "user_id": a.user_id,
-            "username": user_name,
-            "activity_type": a.activity_type,
-            "page_url": a.page_url,
-            "movie_title": a.movie_title,
-            "duration_seconds": a.duration_seconds,
-            "timestamp": a.timestamp.isoformat() if a.timestamp else None,
+            "id": str(a["_id"]), "user_id": str(a.get("user_id")),
+            "username": user_name, "activity_type": a.get("activity_type"),
+            "page_url": a.get("page_url"), "movie_title": a.get("movie_title"),
+            "duration_seconds": a.get("duration_seconds"),
+            "timestamp": a["timestamp"].isoformat() if a.get("timestamp") else None,
         })
     return {"activities": result, "total": total}
 
-
 @app.get("/admin/comments")
 def admin_comments(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = 200, offset: int = 0,
     sentiment: Optional[str] = None,
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    _=Depends(require_admin), db=Depends(get_db)
 ):
-    query = db.query(models.YoutubeComment)
+    query_filter = {}
     if sentiment:
-        query = query.filter(models.YoutubeComment.sentiment_label == sentiment)
-    total = query.count()
-    comments = query.order_by(models.YoutubeComment.timestamp.desc()).offset(offset).limit(limit).all()
+        query_filter["sentiment_label"] = sentiment
+    total = db["youtube_comments"].count_documents(query_filter)
+    comments = list(db["youtube_comments"].find(query_filter).sort("timestamp", -1).skip(offset).limit(limit))
     result = []
     for c in comments:
         author = "Anonymous"
-        if c.owner:
-            author = c.owner.display_name or c.owner.username or "Anonymous"
+        owner = db["users"].find_one({"_id": c.get("user_id")})
+        if owner:
+            author = owner.get("display_name") or owner.get("username") or "Anonymous"
         result.append({
-            "id": c.id,
-            "video_title": c.video_title,
-            "text": c.text,
-            "sentiment_label": c.sentiment_label,
-            "sentiment_score": c.sentiment_score,
-            "author": author,
-            "user_id": c.user_id,
-            "timestamp": c.timestamp.isoformat() if c.timestamp else None,
+            "id": str(c["_id"]), "video_title": c.get("video_title"),
+            "text": c.get("text"), "sentiment_label": c.get("sentiment_label"),
+            "sentiment_score": c.get("sentiment_score"), "author": author,
+            "user_id": str(c.get("user_id")),
+            "timestamp": c["timestamp"].isoformat() if c.get("timestamp") else None,
         })
     return {"comments": result, "total": total}
 
-
 @app.get("/admin/movies")
 def admin_movies(
-    sort_by: str = "most_clicked",
-    movie_type: Optional[str] = None,
-    limit: int = 100,
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    sort_by: str = "most_clicked", movie_type: Optional[str] = None,
+    limit: int = 100, _=Depends(require_admin), db=Depends(get_db)
 ):
     from collections import Counter
-    # tmdb_full_data, bolly_df_full, anime_df_full are already defined globally in api.py
-    
     allowed_titles = None
     if movie_type == 'hollywood' and tmdb_full_data is not None:
         allowed_titles = set(tmdb_full_data['title'].dropna().tolist())
@@ -1785,177 +1568,96 @@ def admin_movies(
     elif movie_type == 'anime' and anime_df_full is not None:
         allowed_titles = set(anime_df_full['Name'].dropna().tolist())
         
-    activities = db.query(models.UserActivity.movie_title).filter(models.UserActivity.activity_type == 'movie_click').filter(models.UserActivity.movie_title.isnot(None)).all()
-    clicks_counter = Counter([a[0] for a in activities])
+    activities = list(db["user_activities"].find({"activity_type": "movie_click", "movie_title": {"$ne": None}}, {"movie_title": 1}))
+    clicks_counter = Counter([a["movie_title"] for a in activities])
     
-    favorites = db.query(models.Favorite.movie_title).filter(models.Favorite.movie_title.isnot(None)).all()
-    fav_counter = Counter([f[0] for f in favorites])
+    favorites = list(db["favorites"].find({"movie_title": {"$ne": None}}, {"movie_title": 1}))
+    fav_counter = Counter([f["movie_title"] for f in favorites])
     
-    watchlists = db.query(models.Watchlist.movie_title).filter(models.Watchlist.movie_title.isnot(None)).all()
-    wl_counter = Counter([w[0] for w in watchlists])
+    watchlists = list(db["watchlist"].find({"movie_title": {"$ne": None}}, {"movie_title": 1}))
+    wl_counter = Counter([w["movie_title"] for w in watchlists])
     
     all_titles = set(clicks_counter.keys()).union(fav_counter.keys()).union(wl_counter.keys())
-    
     if allowed_titles is not None:
         all_titles = all_titles.intersection(allowed_titles)
         
-    results = []
-    for t in all_titles:
-        results.append({
-            "title": t,
-            "clicks": clicks_counter.get(t, 0),
-            "favorites": fav_counter.get(t, 0),
-            "watchlist": wl_counter.get(t, 0)
-        })
-        
-    if sort_by == 'most_clicked':
-        results.sort(key=lambda x: x["clicks"], reverse=True)
-    elif sort_by == 'most_favorite':
-        results.sort(key=lambda x: x["favorites"], reverse=True)
-    elif sort_by == 'most_watchlist':
-        results.sort(key=lambda x: x["watchlist"], reverse=True)
-        
+    results = [{"title": t, "clicks": clicks_counter.get(t, 0), "favorites": fav_counter.get(t, 0), "watchlist": wl_counter.get(t, 0)} for t in all_titles]
+    sort_key = {"most_clicked": "clicks", "most_favorite": "favorites", "most_watchlist": "watchlist"}.get(sort_by, "clicks")
+    results.sort(key=lambda x: x[sort_key], reverse=True)
     return {"movies": results[:limit]}
 
-
 @app.get("/admin/youtube")
-def admin_youtube_stats(
-    sort_by: str = "most_clicked",
-    limit: int = 100,
-    _: models.User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
+def admin_youtube_stats(sort_by: str = "most_clicked", limit: int = 100, _=Depends(require_admin), db=Depends(get_db)):
     from collections import Counter
-    
-    activities = db.query(models.UserActivity.movie_title).filter(models.UserActivity.activity_type == 'youtube_video').filter(models.UserActivity.movie_title.isnot(None)).all()
-    clicks_counter = Counter([a[0] for a in activities])
-    
-    comments = db.query(models.YoutubeComment.video_title).filter(models.YoutubeComment.video_title.isnot(None)).all()
-    comments_counter = Counter([c[0] for c in comments])
-    
+    activities = list(db["user_activities"].find({"activity_type": "youtube_video", "movie_title": {"$ne": None}}, {"movie_title": 1}))
+    clicks_counter = Counter([a["movie_title"] for a in activities])
+    comments = list(db["youtube_comments"].find({"video_title": {"$ne": None}}, {"video_title": 1}))
+    comments_counter = Counter([c["video_title"] for c in comments])
     all_titles = set(clicks_counter.keys()).union(comments_counter.keys())
-    
-    results = []
-    for t in all_titles:
-        results.append({
-            "title": t,
-            "clicks": clicks_counter.get(t, 0),
-            "comments": comments_counter.get(t, 0)
-        })
-        
-    if sort_by == 'most_clicked':
-        results.sort(key=lambda x: x["clicks"], reverse=True)
-    elif sort_by == 'most_commented':
-        results.sort(key=lambda x: x["comments"], reverse=True)
-        
+    results = [{"title": t, "clicks": clicks_counter.get(t, 0), "comments": comments_counter.get(t, 0)} for t in all_titles]
+    sort_key = {"most_clicked": "clicks", "most_commented": "comments"}.get(sort_by, "clicks")
+    results.sort(key=lambda x: x[sort_key], reverse=True)
     return {"youtube_videos": results[:limit]}
 
 
-# ─── Movie Reviews (with auto-sentiment) ────────────────────────────────────────
+# ─── Movie Reviews (path-based) ───
 
-class ReviewCreate(BaseModel):
+class ReviewCreatePath(BaseModel):
     review_text: str
 
 @app.post("/movies/{title}/reviews")
-def post_movie_review(
-    title: str,
-    body: ReviewCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Submit a review for a movie. Auto-runs sentiment analysis."""
+def post_movie_review(title: str, body: ReviewCreatePath, current_user=Depends(get_current_user), db=Depends(get_db)):
     from ml.youtube_ml import classify_comment_sentiment
     sentiment = classify_comment_sentiment(body.review_text)
-
-    review = models.MovieReview(
-        movie_title=title,
-        user_id=current_user.id,
-        review_text=body.review_text,
-        sentiment_label=sentiment["label"],
-        sentiment_confidence=sentiment["confidence"],
+    review = models.new_review_doc(
+        user_id=current_user["_id"], movie_title=title, review_text=body.review_text,
+        sentiment_label=sentiment["label"], sentiment_confidence=sentiment["confidence"],
     )
-    db.add(review)
-    db.commit()
-    db.refresh(review)
+    db["movie_reviews"].insert_one(review)
     return {
-        "id": review.id,
-        "review_text": review.review_text,
-        "sentiment_label": review.sentiment_label,
-        "sentiment_confidence": review.sentiment_confidence,
-        "username": current_user.username,
-        "created_at": review.timestamp.isoformat() if review.timestamp else None,
+        "id": str(review["_id"]), "review_text": review["review_text"],
+        "sentiment_label": review["sentiment_label"], "sentiment_confidence": review.get("sentiment_confidence"),
+        "username": current_user.get("username"),
+        "created_at": review["timestamp"].isoformat() if review.get("timestamp") else None,
     }
-
 
 @app.get("/movies/{title}/reviews")
-def get_movie_reviews(
-    title: str,
-    db: Session = Depends(get_db),
-):
-    """Get all reviews for a movie, newest first."""
-    reviews = (
-        db.query(models.MovieReview, models.User.username)
-        .join(models.User, models.User.id == models.MovieReview.user_id, isouter=True)
-        .filter(models.MovieReview.movie_title == title)
-        .order_by(models.MovieReview.timestamp.desc())
-        .limit(100)
-        .all()
-    )
-    return {
-        "reviews": [
-            {
-                "id": r.MovieReview.id,
-                "username": r.username or "Anonymous",
-                "review_text": r.MovieReview.review_text,
-                "sentiment_label": r.MovieReview.sentiment_label,
-                "sentiment_confidence": r.MovieReview.sentiment_confidence or 0.0,
-                "created_at": r.MovieReview.timestamp.isoformat() if r.MovieReview.timestamp else None,
-            }
-            for r in reviews
-        ]
-    }
+def get_movie_reviews_by_title(title: str, db=Depends(get_db)):
+    reviews = list(db["movie_reviews"].find({"movie_title": title}).sort("timestamp", -1).limit(100))
+    result = []
+    for r in reviews:
+        owner = db["users"].find_one({"_id": r.get("user_id")})
+        username = owner.get("username") if owner else "Anonymous"
+        result.append({
+            "id": str(r["_id"]), "username": username,
+            "review_text": r.get("review_text"), "sentiment_label": r.get("sentiment_label"),
+            "sentiment_confidence": r.get("sentiment_confidence", 0.0),
+            "created_at": r["timestamp"].isoformat() if r.get("timestamp") else None,
+        })
+    return {"reviews": result}
 
 
-# ─── YouTube API ─────────────────────────────────────────────────────────────────
-
-@app.get("/youtube/videos")
-def get_youtube_videos(
-    limit: int = 24,
-    offset: int = 0,
-    search: Optional[str] = None,
-    region: Optional[str] = None,
-    category: Optional[str] = None,
-):
-    """Paginated YouTube video listing with optional filters."""
-    from ml.youtube_ml import get_videos_page
-    return get_videos_page(limit=limit, offset=offset, search=search, region=region, category=category)
-
+# ─── YouTube API (path-based) ───
 
 @app.get("/youtube/search")
 def search_youtube(q: str = "", limit: int = 10, region: Optional[str] = None):
-    """TF-IDF based YouTube video search with NLP."""
     from ml.youtube_ml import search_videos
     videos = search_videos(q, top_k=limit, region=region)
     return {"videos": videos, "query": q}
 
-
 @app.get("/youtube/trending")
 def get_trending(region: Optional[str] = None, limit: int = 24):
-    """Return top trending videos by views for a given region."""
     from ml.youtube_ml import get_videos_page
     return get_videos_page(limit=limit, offset=0, region=region)
 
-
 @app.get("/youtube/video/{video_id}")
-def get_youtube_video(video_id: str, db: Session = Depends(get_db)):
-    """Get single video detail by video_id."""
+def get_youtube_video(video_id: str, db=Depends(get_db)):
     from ml.youtube_ml import _load_videos, _row_to_video
     df = _load_videos()
     if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Video not found")
     mask = df["video_id"] == video_id
     if not mask.any():
-        # Fallback: first partial match
         mask = df["video_id"].str.contains(video_id[:6], na=False)
     if not mask.any():
         raise HTTPException(status_code=404, detail="Video not found")
@@ -1963,10 +1665,8 @@ def get_youtube_video(video_id: str, db: Session = Depends(get_db)):
     video = _row_to_video(row)
     return {"video": video}
 
-
 @app.get("/youtube/video/{video_id}/recommend")
 def recommend_youtube(video_id: str, n: int = 10):
-    """Recommend similar YouTube videos using TF-IDF cosine similarity."""
     from ml.youtube_ml import _load_videos, recommend_videos
     df = _load_videos()
     if df is None or df.empty:
@@ -1976,83 +1676,49 @@ def recommend_youtube(video_id: str, n: int = 10):
     recs = recommend_videos(title, num_recommendations=n)
     return {"recommendations": recs}
 
-
 @app.get("/youtube/video/{video_id}/comments")
-def get_video_comments(video_id: str, db: Session = Depends(get_db)):
-    """Get public comments for a YouTube video."""
-    comments = (
-        db.query(models.YoutubeComment, models.User.username)
-        .join(models.User, models.User.id == models.YoutubeComment.user_id, isouter=True)
-        .filter(models.YoutubeComment.video_id == video_id)
-        .order_by(models.YoutubeComment.timestamp.desc())
-        .limit(200)
-        .all()
-    )
-    return {
-        "comments": [
-            {
-                "id": c.YoutubeComment.id,
-                "username": c.username or "Anonymous",
-                "comment_text": c.YoutubeComment.text,
-                "sentiment_label": c.YoutubeComment.sentiment_label or "neutral",
-                "sentiment_confidence": c.YoutubeComment.sentiment_score or 0.0,
-                "created_at": c.YoutubeComment.timestamp.isoformat() if c.YoutubeComment.timestamp else None,
-            }
-            for c in comments
-        ]
-    }
-
+def get_video_comments(video_id: str, db=Depends(get_db)):
+    comments = list(db["youtube_comments"].find({"video_id": video_id}).sort("timestamp", -1).limit(200))
+    result = []
+    for c in comments:
+        owner = db["users"].find_one({"_id": c.get("user_id")})
+        username = owner.get("username") if owner else "Anonymous"
+        result.append({
+            "id": str(c["_id"]), "username": username,
+            "comment_text": c.get("text"), "sentiment_label": c.get("sentiment_label", "neutral"),
+            "sentiment_confidence": c.get("sentiment_score", 0.0),
+            "created_at": c["timestamp"].isoformat() if c.get("timestamp") else None,
+        })
+    return {"comments": result}
 
 class YTCommentCreate(BaseModel):
     comment_text: str
 
-
 @app.post("/youtube/video/{video_id}/comments")
-def post_video_comment(
-    video_id: str,
-    body: YTCommentCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Post a public comment on a YouTube video — auto-sentiment analysed."""
+def post_video_comment(video_id: str, body: YTCommentCreate, current_user=Depends(get_current_user), db=Depends(get_db)):
     from ml.youtube_ml import classify_comment_sentiment, _load_videos
     sentiment = classify_comment_sentiment(body.comment_text)
-
-    # Resolve video title
     df = _load_videos()
     title = video_id
     if df is not None and not df.empty:
         mask = df["video_id"] == video_id
         if mask.any():
             title = str(df[mask]["title"].iloc[0])
-
-    comment = models.YoutubeComment(
-        video_id=video_id,
-        video_title=title,
-        text=body.comment_text,
-        sentiment_label=sentiment["label"],
-        sentiment_score=sentiment["confidence"],
-        user_id=current_user.id,
+    comment = models.new_youtube_comment_doc(
+        user_id=current_user["_id"], video_id=video_id, video_title=title,
+        text=body.comment_text, sentiment_label=sentiment["label"], sentiment_score=sentiment["confidence"],
     )
-    db.add(comment)
-    db.commit()
-    db.refresh(comment)
+    db["youtube_comments"].insert_one(comment)
     return {
-        "id": comment.id,
-        "username": current_user.username,
-        "comment_text": comment.text,
-        "sentiment_label": comment.sentiment_label,
-        "sentiment_confidence": comment.sentiment_score,
-        "created_at": comment.timestamp.isoformat() if comment.timestamp else None,
+        "id": str(comment["_id"]), "username": current_user.get("username"),
+        "comment_text": comment["text"], "sentiment_label": comment["sentiment_label"],
+        "sentiment_confidence": comment.get("sentiment_score"),
+        "created_at": comment["timestamp"].isoformat() if comment.get("timestamp") else None,
     }
 
-
 @app.get("/youtube/video/{video_id}/analysis")
-def analyze_youtube_video(video_id: str, db: Session = Depends(get_db)):
-    """Fake engagement detection + comment sentiment summary for a video."""
+def analyze_youtube_video_detail(video_id: str, db=Depends(get_db)):
     from ml.youtube_ml import _load_videos, detect_fake_engagement, analyze_comments
-
-    # Get video stats
     df = _load_videos()
     views, likes, comment_count = 0, 0, 0
     if df is not None and not df.empty:
@@ -2062,23 +1728,14 @@ def analyze_youtube_video(video_id: str, db: Session = Depends(get_db)):
             views = int(row.get("views", 0) or 0)
             likes = int(row.get("likes", 0) or 0)
             comment_count = int(row.get("comment_count", 0) or 0)
-
-    # Fake engagement detection
     fake = detect_fake_engagement(views, likes, comment_count)
-
-    # Comment sentiment from stored DB comments
-    stored = db.query(models.YoutubeComment).filter(models.YoutubeComment.video_id == video_id).all()
-    comment_dicts = [{"text": c.text} for c in stored]
+    stored = list(db["youtube_comments"].find({"video_id": video_id}))
+    comment_dicts = [{"text": c.get("text")} for c in stored]
     sentiment_summary = analyze_comments(comment_dicts)
-
     return {
-        "is_suspicious": fake["is_suspicious"],
-        "flags": fake["flags"],
-        "confidence": fake["confidence"],
-        "sentiment_summary": sentiment_summary,
+        "is_suspicious": fake["is_suspicious"], "flags": fake["flags"],
+        "confidence": fake["confidence"], "sentiment_summary": sentiment_summary,
     }
-
-
 
 
 if __name__ == "__main__":
