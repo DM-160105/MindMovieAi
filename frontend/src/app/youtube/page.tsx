@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { useIsMobile } from '@/hooks/useIsMobile';
 import api from '@/lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Filter, X, TrendingUp, Play } from 'lucide-react';

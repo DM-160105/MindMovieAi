@@ -3,7 +3,6 @@ import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
 import { ThemeProvider } from '@/context/ThemeContext';
 import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
 import { Toaster } from 'react-hot-toast';
 
 export const metadata: Metadata = {

@@ -70,6 +70,7 @@ from hf_utils import get_artifact_file
 try:
     pkl_path = get_artifact_file('movie_dict.pkl')
     idx_path = get_artifact_file('movies.index')
+
     movies_dict = pickle.load(open(pkl_path, 'rb'))
     movies = pd.DataFrame(movies_dict)
     if 'title' in movies.columns:
@@ -82,13 +83,17 @@ except Exception as e:
     index = None
 
 # Optional loading of full CSV data for /movie-details
+from hf_utils import get_dataset_file
 try:
-    movies_csv = pd.read_csv(os.path.join(BASE_DIR, 'data', 'tmdb_5000_movies.csv'))
-    credits_csv = pd.read_csv(os.path.join(BASE_DIR, 'data', 'tmdb_5000_credits.csv'))
+    movies_csv_path = get_dataset_file('tmdb_5000_movies.csv')
+    credits_csv_path = get_dataset_file('tmdb_5000_credits.csv')
+    movies_csv = pd.read_csv(movies_csv_path)
+    credits_csv = pd.read_csv(credits_csv_path)
     tmdb_full_data = movies_csv.merge(credits_csv, left_on='id', right_on='movie_id', suffixes=('', '_credits'))
-except FileNotFoundError:
-    print("Warning: TMDB CSV data files not found.")
+except Exception as e:
+    print(f"Warning: Could not load TMDB CSV data: {e}")
     tmdb_full_data = None
+
 
 try:
     anime_df_full = pd.read_csv(os.path.join(BASE_DIR, 'data', 'anime-dataset-2023.csv'))
@@ -256,6 +261,21 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optio
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Movie Recommender API! Use /recommend?title=MovieTitle to get recommendations."}
+
+@app.head("/")
+def read_root_head():
+    """Explicitly handle HEAD requests to / to avoid 405 Method Not Allowed."""
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+def get_favicon():
+    """Return an empty response for common icon requests to avoid 404 errors in logs."""
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
 
 
 # ─── AUTH ENDPOINTS ───
