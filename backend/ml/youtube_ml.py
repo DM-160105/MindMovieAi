@@ -247,7 +247,7 @@ def _build_comment_classifier():
             df_train = df_train.sample(50000, random_state=42)
 
         _comment_tfidf = TfidfVectorizer(
-            max_features=15000,
+            max_features=5000,
             ngram_range=(1, 2),
             sublinear_tf=True,
             strip_accents="unicode",

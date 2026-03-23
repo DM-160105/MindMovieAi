@@ -155,21 +155,31 @@ def main():
     bolly_df['origin'] = 'bollywood'
     anime_df['origin'] = 'anime'
     
+    # Optional: Filter anime to keep only higher rated ones to save memory
+    anime_df = anime_df[anime_df['vote_average'] >= 6.5].head(15000)
+    
     new_df = pd.concat([tmdb_df, bolly_df, anime_df], ignore_index=True)
     
     print("Stemming tags...")
     new_df['tags'] = new_df['tags'].apply(stem_text)
     
     print("Vectorizing...")
-    # We increase max_features to 10000 since dataset is much bigger
-    cv = CountVectorizer(max_features=10000, stop_words='english')
+    # Reduce max_features to 3000 to keep index size small for Render (512MB RAM)
+    cv = CountVectorizer(max_features=3000, stop_words='english')
     vectors = cv.fit_transform(new_df['tags']).toarray()
     
-    print("Building FAISS index...")
+    print("Building Optimized FAISS index...")
     vectors = vectors.astype(np.float32)
     faiss.normalize_L2(vectors)
-    index = faiss.IndexFlatIP(vectors.shape[1])
+    
+    # Use Scalar Quantizer (SQ8) to shrink index 4x (from 4 bytes to 1 byte per dimension)
+    # This reduces index size from ~1.2GB down to ~70MB
+    quantizer = faiss.IndexFlatIP(vectors.shape[1])
+    index = faiss.IndexScalarQuantizer(vectors.shape[1], faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT)
+    index.train(vectors)
     index.add(vectors)
+    
+    print(f"Index built. Total movies: {len(new_df)}, Features: {vectors.shape[1]}")
     
     print("Saving artifacts...")
     import os
