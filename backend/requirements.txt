@@ -1,4 +1,4 @@
-streamlit
+--extra-index-url https://download.pytorch.org/whl/cpu
 pandas
 scikit-learn
 nltk
@@ -13,8 +13,9 @@ torchtext
 passlib[bcrypt]
 bcrypt<4.0.0
 PyJWT
-sqlalchemy
 python-multipart
 vaderSentiment
 numpy
-psycopg2-binary
+pymongo[srv]
+python-dotenv
+huggingface_hub
