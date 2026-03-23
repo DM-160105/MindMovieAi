@@ -8,6 +8,8 @@ services:
       pip install -r requirements.txt
     startCommand: bash start.sh
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
       - key: PORT
         value: 10000
       - key: MONGODB_URI
