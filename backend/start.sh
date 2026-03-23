@@ -20,10 +20,17 @@ mkdir -p data/youtube_dataset
 mkdir -p data/youtube_comment_dataset
 mkdir -p artifacts
 
-# Optional: Generate artifacts if they don't exist
+# Download artifacts from Hugging Face if they don't exist locally
 if [ ! -f artifacts/movies.index ] || [ ! -f artifacts/movie_dict.pkl ]; then
-    echo "Generating ML artifacts (this might take a while)..."
-    python generate_artifacts.py
+    echo "Artifacts not found locally. Downloading from Hugging Face..."
+    python -c "
+from hf_utils import get_artifact_file
+print('Downloading movie_dict.pkl...')
+get_artifact_file('movie_dict.pkl')
+print('Downloading movies.index...')
+get_artifact_file('movies.index')
+print('Artifacts ready.')
+"
 fi
 
 # Start the FastAPI server using Uvicorn

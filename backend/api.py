@@ -64,15 +64,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load artifacts
+# Load artifacts — download from Hugging Face if not present locally
+from hf_utils import get_artifact_file
+
 try:
-    movies_dict = pickle.load(open(os.path.join(BASE_DIR, 'artifacts', 'movie_dict.pkl'), 'rb'))
+    pkl_path = get_artifact_file('movie_dict.pkl')
+    idx_path = get_artifact_file('movies.index')
+    movies_dict = pickle.load(open(pkl_path, 'rb'))
     movies = pd.DataFrame(movies_dict)
     if 'title' in movies.columns:
         movies['title_lower'] = movies['title'].astype(str).str.lower()
-    index = faiss.read_index(os.path.join(BASE_DIR, 'artifacts', 'movies.index'))
-except FileNotFoundError:
-    raise RuntimeError("Model files not found. Please run generate_artifacts.py first.")
+    index = faiss.read_index(idx_path)
+    print("✅ Artifacts loaded successfully.")
+except Exception as e:
+    print(f"❌ Failed to load artifacts: {e}")
+    movies = pd.DataFrame()
+    index = None
 
 # Optional loading of full CSV data for /movie-details
 try:
