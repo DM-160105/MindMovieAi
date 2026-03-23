@@ -7,7 +7,7 @@ load_dotenv()
 # Compute BASE_DIR independently (no circular import from api)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-REPO_ID = os.getenv("HUGGINGFACE_DATASET_REPO", "DM-160105/movie-recommender-data")
+REPO_ID = os.getenv("HUGGINGFACE_DATASET_REPO", "dev1601/MindMovieAi")
 
 def get_dataset_file(filename: str, subfolder: str = None) -> str:
     """
