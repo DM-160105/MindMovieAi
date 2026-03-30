@@ -4,9 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Filter, X, TrendingUp, Play } from 'lucide-react';
+import { Search, Filter, X, TrendingUp, Play, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface Video {
   id: string;
@@ -145,41 +146,50 @@ export default function YouTubePage() {
   }, [search]);
 
   const pickSuggestion = (t: string) => { setSearch(t); setQuery(t); setShowSuggest(false); };
+  const isMobile = useIsMobile();
 
   return (
     <div className="page-container">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 style={{ fontWeight: 900, fontSize: '1.75rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <TrendingUp size={22} color="var(--danger)" /> YouTube Trending
+      <div style={isMobile ? {gap: '0.75rem', marginBottom: '2rem'} : { display: 'flex', alignItems: 'center',justifyContent: 'center', gap: '0.75rem', marginBottom: '2rem' } }>
+        <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}>
+          <h1 style={{ fontWeight: 900, fontSize: isMobile ? '1.5rem' : '2rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.6rem', letterSpacing: '-0.02em', marginBottom: '0.3rem' }}>
+            <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: isMobile ? '0.5rem' : '1rem', borderRadius: '50%', display: 'flex', outline: '1px solid var(--logo-outline)', outlineOffset: '2px', }}>
+              <TrendingUp size={isMobile ? 24 : 29} />
+            </div>
+            YouTube Trending
           </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>AI-powered video analysis, fake engagement detection &amp; comment sentiment</p>
-        </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', fontWeight: 500,marginTop: isMobile ? '1rem' : '0' }}>AI-powered video analysis, fake engagement & sentiment tracking.</p>
+        </motion.div>
       </div>
 
       {/* Search + Region row */}
-      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         {/* Search */}
-        <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '9999px', padding: '0.8rem 1.25rem' }}
-            onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTimeout(() => setShowSuggest(false), 150); }}>
-            <Search size={24} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+        <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
+          <motion.div whileTap={{ scale: 0.995 }} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-blur)', WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)', border: '1px solid var(--border)', borderRadius: '1rem', padding: '0.75rem 1.25rem', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', transition: 'border-color 0.2s' }}
+            onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTimeout(() => setShowSuggest(false), 150); }}
+            onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+          >
+            <Search size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
             <input type="text" value={search} onChange={e => { setSearch(e.target.value); setShowSuggest(true); }}
               onKeyDown={e => { if (e.key === 'Enter') { setQuery(search); setShowSuggest(false); } }}
-              placeholder="Search videos…"
-              style={{ flex: 1, background: 'none', border: 'none', outline: 'none', color: 'var(--text-primary)', fontSize: '0.875rem', fontFamily: 'inherit' ,width: '100%'}}
+              placeholder="Search trending videos..."
+              style={{ flex: 1, background: 'none', border: 'none', outline: 'none', color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 500, fontFamily: 'inherit', width: '100%' }}
               autoComplete="off"
             />
-            {search && <button onClick={() => { setSearch(''); setQuery(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0 }}><X size={13} /></button>}
-          </div>
+            {search && <button onClick={() => { setSearch(''); setQuery(''); }} style={{ background: 'var(--bg-elevated)', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', padding: '0.3rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></button>}
+          </motion.div>
           <AnimatePresence>
             {showSuggest && suggestions.length > 0 && (
-              <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '0.875rem', zIndex: 100, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.2)' }}>
+              <motion.div initial={{ opacity: 0, y: 10, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 5 }} transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                style={{ position: 'absolute', top: 'calc(100% + 8px)', left: 0, right: 0, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: '1rem', zIndex: 100, overflow: 'hidden', boxShadow: '0 12px 32px rgba(0,0,0,0.15)' }}>
                 {suggestions.map((s, i) => (
-                  <button key={i} onMouseDown={() => pickSuggestion(s)} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', borderBottom: i < suggestions.length - 1 ? '1px solid var(--border)' : 'none', cursor: 'pointer', color: 'var(--text-primary)', fontSize: '0.85rem', fontFamily: 'inherit', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <Search size={12} color="var(--text-muted)" />{s}
+                  <button key={i} onMouseDown={() => pickSuggestion(s)} style={{ width: '100%', padding: '0.75rem 1.25rem', background: 'none', border: 'none', borderBottom: i < suggestions.length - 1 ? '1px solid var(--border)' : 'none', cursor: 'pointer', color: 'var(--text-primary)', fontSize: '0.875rem', fontWeight: 500, fontFamily: 'inherit', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '0.75rem', transition: 'background 0.15s' }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-surface)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  >
+                    <Search size={14} color="var(--accent)" />{s}
                   </button>
                 ))}
               </motion.div>
@@ -188,19 +198,22 @@ export default function YouTubePage() {
         </div>
 
         {/* Region filter */}
-        <select value={region} onChange={e => setRegion(e.target.value)}
-          style={{ padding: '0.8rem 1.25rem', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '9999px', color: 'var(--text-secondary)', fontSize: '0.85rem', fontFamily: 'inherit', cursor: 'pointer', outline: 'none', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none' }}>
-          <option value="" style={{ background: 'var(--bg-surface)' }}>All Regions</option>
-          {REGIONS.map(r => <option key={r} value={r} style={{ background: 'var(--bg-surface)' }}>{r}</option>)}
-        </select>
+        <div style={{ position: 'relative', width: '130px', flexShrink: 0 }}>
+          <select value={region} onChange={e => setRegion(e.target.value)}
+            style={{ width: '100%', padding: '0.75rem 2.5rem 0.75rem 1.25rem', background: 'var(--bg-blur)', WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)', border: '1px solid var(--border)', borderRadius: '1rem', color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', transition: 'all 0.2s', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
+            <option value="" style={{ background: 'var(--bg-elevated)' }}>Global</option>
+            {REGIONS.map(r => <option key={r} value={r} style={{ background: 'var(--bg-elevated)' }}>{r} Trending</option>)}
+          </select>
+          <ChevronDown size={16} color="var(--text-muted)" style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+        </div>
       </div>
 
       {/* Category chips */}
       {categories.length > 0 && (
-        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-          <button onClick={() => setCategory('')} style={{ padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.78rem', fontWeight: 600, border: `1px solid ${!category ? 'var(--accent-border)' : 'var(--border)'}`, background: !category ? 'var(--accent-subtle)' : 'var(--bg-elevated)', color: !category ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.18s' }}>All</button>
-          {categories.map(c => (
-            <button key={c} onClick={() => setCategory(c === category ? '' : c)} style={{ padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.78rem', fontWeight: 600, border: `1px solid ${c === category ? 'var(--accent-border)' : 'var(--border)'}`, background: c === category ? 'var(--accent-subtle)' : 'var(--bg-elevated)', color: c === category ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.18s' }}>{c}</button>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '2rem' }}>
+          <motion.button whileTap={{ scale: 0.95 }} onClick={() => setCategory('')} style={{ padding: '0.4rem 1rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 700, border: `1px solid ${!category ? 'var(--accent)' : 'var(--border)'}`, background: !category ? 'var(--accent)' : 'var(--bg-blur)', color: !category ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.2s', boxShadow: !category ? '0 4px 12px rgba(16, 185, 129, 0.25)' : 'none' }}>All Categories</motion.button>
+          {categories.map((c, i) => (
+            <motion.button key={c} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.03 }} whileTap={{ scale: 0.95 }} onClick={() => setCategory(c === category ? '' : c)} style={{ padding: '0.4rem 1rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 700, border: `1px solid ${c === category ? 'var(--accent)' : 'var(--border)'}`, background: c === category ? 'var(--accent)' : 'var(--bg-blur)', color: c === category ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.2s', boxShadow: c === category ? '0 4px 12px rgba(16, 185, 129, 0.25)' : 'none' }}>{c}</motion.button>
           ))}
         </div>
       )}

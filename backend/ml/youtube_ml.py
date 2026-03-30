@@ -6,7 +6,6 @@ YouTube ML Module — Real data-driven implementation
 - NLP: stopword removal, stemming, cosine similarity
 """
 import os
-import sys
 import json
 import logging
 import numpy as np
@@ -52,7 +51,7 @@ def _tokenize(text):
 def _load_category_map():
     """Load category_id -> name from US JSON (they share the same categories)."""
     global _category_map
-    json_path = get_dataset_file("US_category_id.json")
+    json_path = get_dataset_file("US_category_id.json", subfolder="data/youtube_dataset")
     if os.path.exists(json_path):
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -81,7 +80,7 @@ def _load_videos():
 
     dfs = []
     for region, fname in region_files:
-        fpath = get_dataset_file(fname)
+        fpath = get_dataset_file(fname, subfolder="data/youtube_dataset")
         if not os.path.exists(fpath):
             continue
         try:
@@ -182,7 +181,7 @@ def _build_comment_classifier():
     if _comment_clf is not None:
         return
 
-    comment_path = get_dataset_file("YoutubeCommentsDataSet.csv")
+    comment_path = get_dataset_file("YoutubeCommentsDataSet.csv", subfolder="data/youtube_comment_dataset")
 
     if not os.path.exists(comment_path):
         logger.warning("Comment dataset not found; using rule-based fallback.")

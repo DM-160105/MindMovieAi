@@ -43,6 +43,8 @@ export const updatePreferences = (data: {
   favorite_genres?: string[];
   disliked_genres?: string[];
   movie_sources?: string[];
+  location_lat?: number;
+  location_lon?: number;
 }) => {
   const toCSV = (arr?: string[]) => (arr && arr.length > 0 ? arr.join(',') : undefined);
   return api.put('/me/preferences', {
@@ -52,6 +54,8 @@ export const updatePreferences = (data: {
     favorite_genres: toCSV(data.favorite_genres),
     disliked_genres: toCSV(data.disliked_genres),
     movie_sources: toCSV(data.movie_sources),
+    location_lat: data.location_lat,
+    location_lon: data.location_lon,
     onboarding_completed: true,
   });
 };
@@ -117,5 +121,35 @@ export const addToWatchlist = (movie_title: string) =>
   api.post('/watchlist', { movie_title });
 export const removeFromWatchlist = (title: string) =>
   api.delete(`/watchlist/${encodeURIComponent(title)}`);
+
+// ─── Emotional Arc (Mood Recommender) ─────────────────────────────────────────
+
+/** Ping the server to pre-warm it (Render cold-start mitigation) */
+export const pingServer = () =>
+  api.get('/api/ping', { timeout: 5000 }).catch(() => {});
+
+/** Fetch 50 preset moods with pre-computed VADER vectors */
+export const getMoods = () => api.get('/api/moods');
+
+/** Get arc-based movie recommendations */
+export const getArcRecommendations = (body: {
+  current_mood: string;
+  desired_mood: string;
+  genres: string[];
+  limit: number;
+}) =>
+  api.post('/api/arc-recommend', body, { timeout: 45000 });
+
+/** Fetch a single movie with arc data */
+export const getArcMovie = (movieId: string) =>
+  api.get(`/api/arc-movie/${movieId}`);
+
+/** Submit mood-aware rating */
+export const rateArcMovie = (body: {
+  movie_id: string;
+  rating: number;
+  mood_before: string;
+  mood_after: string;
+}) => api.post('/api/arc-rate', body);
 
 export default api;

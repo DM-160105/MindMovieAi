@@ -1,10 +1,10 @@
 """
-User Preference Prediction Model
-Predicts preferred movie genres based on user's search history, ratings, and activity.
-Uses a lightweight neural network approach with collaborative filtering.
+User Preference Prediction.
+
+Predicts preferred movie genres by combining weighted rating history
+and search query analysis into a unified genre affinity vector.
 """
 
-import os
 import numpy as np
 from collections import Counter
 

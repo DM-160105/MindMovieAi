@@ -8,12 +8,14 @@ interface User {
   username: string;
   email: string;
   display_name?: string;
+  avatar_url?: string;
   age?: number;
   gender?: string;
   favorite_genres?: string[];
   disliked_genres?: string[];
   onboarding_completed?: boolean;
   is_admin?: boolean;
+  location?: { lat: number; lon: number } | null;
 }
 
 interface AuthContextType {
@@ -64,12 +66,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const stored = localStorage.getItem('stremflix_token');
     if (stored) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setToken(stored);
       fetchUser().finally(() => setLoading(false));
     } else {
       setLoading(false);
     }
   }, [fetchUser]);
+
+  // Helper to get location if user permits
+  const requestLocation = (): Promise<{ lat: number; lon: number } | null> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => resolve(null), // User denied or error
+        { timeout: 5000 }
+      );
+    });
+  };
 
   const login = async (username: string, password: string): Promise<User> => {
     const res = await loginUser(username, password);
@@ -80,27 +98,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let loggedInUser: User;
     if (res.data.user) {
       loggedInUser = parseUserFromResponse(res.data);
-      setUser(loggedInUser);
     } else {
       const getRes = await getMe();
       loggedInUser = parseUserFromResponse(getRes.data);
-      setUser(loggedInUser);
     }
+
+    // Try to get location upon login
+    const loc = await requestLocation();
+    if (loc) loggedInUser.location = loc;
+
+    setUser(loggedInUser);
     return loggedInUser;
   };
 
   const register = async (data: { username: string; email: string; password: string; display_name?: string }) => {
     const res = await registerUser(data);
-    // /register returns {access_token, user}
+    // If backend requires verification, it won't return an access_token
     if (res.data.access_token) {
       localStorage.setItem('stremflix_token', res.data.access_token);
       setToken(res.data.access_token);
-    }
-    if (res.data.user) {
-      setUser(parseUserFromResponse(res.data));
-    } else {
-      // Fall back to logging in
-      await login(data.username, data.password);
+      
+      const newUser = parseUserFromResponse(res.data);
+      const loc = await requestLocation();
+      if (loc) newUser.location = loc;
+      setUser(newUser);
     }
   };
 

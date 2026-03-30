@@ -62,7 +62,7 @@ function FavoritesContent() {
   return (
     <div className="page-container">
       
-      <div style={{ display: 'flex', alignItems: 'center',justifyContent: 'center', gap: '0.75rem', marginBottom: '2rem',marginTop: '4rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center',justifyContent: 'center', gap: '0.75rem', marginBottom: '2rem' }}>
         <Heart size={isMobile ? 24 : 50} color="var(--danger)" fill="var(--danger)" />
         <h1 style={{ fontWeight: 900, fontSize: isMobile ? '2rem' : '3rem', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>Favorites</h1>
       </div>

@@ -2,12 +2,13 @@
 
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { getMovies, getPersonalizedRecommendations, addFavorite, addToWatchlist, trackActivity, trackSearch } from '@/lib/api';
 import MovieCard from '@/components/MovieCard';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Filter, X, SlidersHorizontal, Star, Sparkles, TrendingUp } from 'lucide-react';
+import { Search, Filter, X, SlidersHorizontal, Star, Sparkles, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Movie } from '@/components/MovieCard';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -139,10 +140,283 @@ function FilterDrawer({ open, onClose, filters, setFilters }: { open: boolean; o
   );
 }
 
+// ─── Hero Carousel (JioCinema / Hotstar Style) ────────────────────────────────
+
+function HeroCarousel({ movies }: { movies: Movie[] }) {
+  const [index, setIndex] = useState(0);
+  const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile(768);
+  const isTablet = useIsMobile(1100) && !isMobile;
+  const isLargeDesktop = !useIsMobile(1400);
+  const isDesktop = !useIsMobile(1100);
+  
+  // Use a subset of movies for the hero section
+  const heroMovies = movies.length > 12 ? movies.slice(0, 12) : movies;
+
+  useEffect(() => {
+    if (isHovered) return;
+    const timer = setInterval(() => {
+      setIndex((prev) => (prev + 1) % heroMovies.length);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [heroMovies.length, isHovered]);
+
+  const next = () => setIndex((prev) => (prev + 1) % heroMovies.length);
+  const prev = () => setIndex((prev) => (prev - 1 + heroMovies.length) % heroMovies.length);
+
+  if (heroMovies.length === 0) return null;
+
+  // Responsive constants
+  const cardWidth = isMobile ? 220 : isTablet ? 280 : isLargeDesktop ? 340 : 310;
+  const cardHeight = isMobile ? 320 : isTablet ? 400 : isLargeDesktop ? 480 : 440;
+  const xOffsetMultiplier = isMobile ? 180 : isTablet ? 230 : isLargeDesktop ? 290 : 260; // Thinner gaps
+  const visibleRange = isMobile ? 2 : isTablet ? 3 : 5; // Show more on large screens
+  const containerHeight = isMobile ? 400 : isTablet ? 500 : 600;
+
+  return (
+    <div 
+      className="hero-carousel-container"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: `${containerHeight}px`,
+        marginBottom: '3.5rem',
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        perspective: '1200px', // Increased for better depth on large screens
+      }}
+    >
+      <div style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transformStyle: 'preserve-3d',
+      }}>
+        <AnimatePresence initial={false}>
+          {heroMovies.map((movie, i) => {
+            // Calculate relative distance for the infinite loop effect
+            let offset = i - index;
+            if (offset < -Math.floor(heroMovies.length / 2)) offset += heroMovies.length;
+            if (offset > Math.floor(heroMovies.length / 2)) offset -= heroMovies.length;
+
+            const isCenter = offset === 0;
+            const isVisible = Math.abs(offset) <= visibleRange;
+
+            if (!isVisible) return null;
+
+            // Animated Border Glow (3 colors: Cyan, Pink, Amber)
+            const borderGlowColors = ['#00f2ff', '#ff00d4', '#ffcc00'];
+
+            return (
+              <motion.div
+                key={movie.title}
+                initial={{ opacity: 0, scale: 0.7, x: offset * xOffsetMultiplier }}
+                animate={{
+                  opacity: isCenter ? 1 : Math.max(0.1, 0.6 - Math.abs(offset) * 0.15),
+                  scale: isCenter ? 1 : 0.85 - Math.abs(offset) * 0.05,
+                  x: offset * xOffsetMultiplier,
+                  zIndex: isCenter ? 20 : 10 - Math.abs(offset),
+                  rotateY: offset * -12, // Subtle rotation
+                  translateZ: isCenter ? 0 : -Math.abs(offset) * 50, // Depth
+                }}
+                whileHover={isCenter ? "hover" : undefined}
+                exit={{ opacity: 0, scale: 0.5 }}
+                transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+                style={{
+                  position: 'absolute',
+                  width: `${cardWidth}px`,
+                  height: `${cardHeight}px`,
+                  borderRadius: '16px',
+                  cursor: 'pointer',
+                  background: 'transparent', // Let children handle BG
+                  perspective: '1000px',
+                }}
+                onClick={() => setIndex(i)}
+              >
+                {/* ── Rotating Animated Border Glow Layer (Center Only) ── */}
+                {isCenter && (
+                  <motion.div
+                    variants={{
+                      hover: { opacity: 1, scale: 1.02 }
+                    }}
+                    initial={{ opacity: 0, scale: 1 }}
+                    transition={{ duration: 0.3 }}
+                    style={{
+                      position: 'absolute',
+                      inset: '-2px', // Slightly larger for border effect
+                      borderRadius: '18px',
+                      overflow: 'hidden',
+                      zIndex: -1,
+                      background: 'var(--bg-elevated)',
+                      border: '2px solid var(--accent)', // Solid border for center card
+                    }}
+                  >
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+                      style={{
+                        position: 'absolute',
+                        inset: '-100%',
+                        background: `conic-gradient(from 0deg, ${borderGlowColors[0]}, ${borderGlowColors[1]}, ${borderGlowColors[2]}, ${borderGlowColors[0]})`,
+                      }}
+                    />
+                  </motion.div>
+                )}
+
+                {/* Inner Content Card (Mask) */}
+                <div style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: '100%',
+                  borderRadius: '16px',
+                  overflow: 'hidden',
+                  background: 'var(--bg-elevated)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  boxShadow: isCenter ? '0 25px 60px rgba(0,0,0,0.3)' : '0 10px 30px rgba(0,0,0,0.15)',
+                }}>
+                  <img
+                    src={movie.poster_url || movie.poster || '/placeholder-movie.png'}
+                    alt={movie.title}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      opacity: isCenter ? 1 : Math.max(0.3, 0.8 - Math.abs(offset) * 0.15),
+                      filter: isCenter ? 'none' : `blur(${Math.abs(offset) * 0.5}px)`,
+                      transition: 'filter 0.4s ease, opacity 0.4s ease',
+                    }}
+                  />
+                  
+                  {/* Info Overlay for Center Card */}
+                  {isCenter && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        padding: isMobile ? '1.25rem' : '2.5rem 2rem',
+                        background: 'linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,0.8) 40%, transparent 100%)',
+                        color: 'white',
+                      }}
+                    >
+                      <h3 style={{ fontSize: isMobile ? '1.25rem' : '2rem', fontWeight: 900, marginBottom: '0.4rem', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{movie.title}</h3>
+                      <div style={{ display: 'flex', gap: '1.25rem', fontSize: isMobile ? '0.8rem' : '1rem', fontWeight: 600 }}>
+                        <span style={{ color: 'var(--accent)' }}>{movie.year}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Star size={isMobile ? 12 : 16} fill="var(--star)" color="var(--star)" />
+                          {movie.vote_average || movie.rating || 'N/A'}
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+
+      {/* Navigation Buttons */}
+      {!isMobile && (
+        <>
+          <button
+            onClick={prev}
+            style={{
+              position: 'absolute',
+              left: '2rem',
+              zIndex: 20,
+              background: 'var(--bg-blur)',
+              border: '1px solid var(--border)',
+              borderRadius: '50%',
+              width: '48px',
+              height: '48px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-primary)',
+              cursor: 'pointer',
+              backdropFilter: 'blur(8px)',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg-surface)'; e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+            onMouseOut={(e) => { e.currentTarget.style.background = 'var(--bg-blur)'; e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.transform = 'scale(1)'; }}
+          >
+            <ChevronLeft size={24} />
+          </button>
+          <button
+            onClick={next}
+            style={{
+              position: 'absolute',
+              right: '2rem',
+              zIndex: 20,
+              background: 'var(--bg-blur)',
+              border: '1px solid var(--border)',
+              borderRadius: '50%',
+              width: '48px',
+              height: '48px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-primary)',
+              cursor: 'pointer',
+              backdropFilter: 'blur(8px)',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg-surface)'; e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+            onMouseOut={(e) => { e.currentTarget.style.background = 'var(--bg-blur)'; e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.transform = 'scale(1)'; }}
+          >
+            <ChevronRight size={24} />
+          </button>
+        </>
+      )}
+
+      {/* Pagination Dots */}
+      <div style={{
+        position: 'absolute',
+        bottom: '0rem',
+        display: 'flex',
+        gap: '0.5rem',
+        zIndex: 20,
+      }}>
+        {heroMovies.map((_, i) => (
+          <div
+            key={i}
+            onClick={() => setIndex(i)}
+            style={{
+              width: i === index ? '24px' : '8px',
+              height: '8px',
+              borderRadius: '4px',
+              background: i === index ? 'var(--accent)' : 'var(--border)',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 const PAGE_SIZE = 28;
 
 function ExploreContent() {
   const { user } = useAuth();
+  const router = useRouter();
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -159,7 +433,6 @@ function ExploreContent() {
   const [profileStrength, setProfileStrength] = useState<string>('cold');
   const searchRef = useRef<HTMLInputElement>(null);
   const suggestTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const queryTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const isMobile = useIsMobile();
 
   const activeFilterCount = filters.sources.length + filters.genres.length + (filters.minRating > 0 ? 1 : 0) + (filters.yearFrom !== 1970 || filters.yearTo !== 2024 ? 1 : 0);
@@ -223,7 +496,7 @@ function ExploreContent() {
       setTopGenres([]);
     } catch { toast.error('Failed to load movies'); }
     finally { if (reset) setLoading(false); else setLoadingMore(false); }
-  }, [query, filters, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [query, filters, offset]);  
 
   // Track search queries
   const doTrackSearch = useCallback((q: string, count: number) => {
@@ -256,19 +529,8 @@ function ExploreContent() {
     return () => clearTimeout(suggestTimer.current);
   }, [search]);
 
-  // Main search debounce
-  useEffect(() => {
-    clearTimeout(queryTimer.current);
-    queryTimer.current = setTimeout(() => {
-      if (search !== query && search.trim().length > 0) {
-        setQuery(search);
-        doTrackSearch(search, 0);
-      } else if (search.trim() === '' && query !== '') {
-        setQuery('');
-      }
-    }, 400);
-    return () => clearTimeout(queryTimer.current);
-  }, [search, query, doTrackSearch]);
+  // Real-time debounce removed per request. Search now executes solely via handleSearch (Enter) or suggestions.
+
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -278,8 +540,9 @@ function ExploreContent() {
   };
 
   const pickSuggestion = (title: string) => {
-    setSearch(title); setQuery(title); setShowSuggestions(false);
+    setSearch(title); setShowSuggestions(false);
     doTrackSearch(title, 0);
+    router.push(`/movie/${encodeURIComponent(title)}`);
   };
 
   const clearSearch = () => {
@@ -297,55 +560,70 @@ function ExploreContent() {
   return (
     <div className="page-container">
       {/* Header */}
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontWeight: 900, fontSize: '2rem', color: 'var(--text-primary)', letterSpacing: '-0.02em', marginBottom: '0.25rem' }}>
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} style={{ marginBottom: '2.5rem', display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'flex-start' : 'center', textAlign: isMobile ? 'left' : 'center' }}>
+        <h1 style={{ fontWeight: 900, fontSize: isMobile ? '1.5rem' : '2.5rem', color: 'var(--text-primary)', letterSpacing: '-0.03em', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'center', gap: '0.75rem' }}>
+          <div style={{ background: query ? 'var(--accent-subtle)' : isPersonalized ? 'rgba(255, 184, 0, 0.15)' : 'var(--danger-subtle)', color: query ? 'var(--accent)' : isPersonalized ? 'var(--star)' : 'var(--danger)', padding: isMobile ? '0.3rem' : '0.7rem', borderRadius: '999px', display: 'flex', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', outline: '1px solid var(--logo-outline)', outlineOffset: '2.5px' }}>
+            {query ? <Search size={isMobile ? 22 : 40} /> : isPersonalized ? <Sparkles size={isMobile ? 22 : 40} /> : <TrendingUp size={isMobile ? 22 : 40} />}
+          </div>
           {query ? 'Search Results' : isPersonalized ? 'Recommended For You' : 'Explore Movies'}
         </h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'center', gap: '0.75rem', flexWrap: 'wrap', marginLeft: isMobile ? '0.2rem' : '0' }}>
+          <p style={{ color: 'var(--text-secondary)', fontSize: isMobile ? '0.85rem' : '1rem', fontWeight: 500 }}>
             {user?.display_name ? `Welcome back, ${user.display_name}!` : 'Discover your next favourite'}
           </p>
           {isPersonalized && (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-              padding: '0.2rem 0.6rem', borderRadius: '9999px',
-              background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)',
-              color: badge.color, fontSize: '0.72rem', fontWeight: 700,
+            <motion.span initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
+              padding: '0.25rem 0.8rem', borderRadius: '9999px',
+              background: 'var(--bg-elevated)', border: `1px solid ${badge.color}`,
+              color: badge.color, fontSize: isMobile ? '0.7rem' : '0.75rem', fontWeight: 800,
+              boxShadow: `0 4px 12px ${badge.color}20`
             }}>
-              <Sparkles size={11} /> {badge.label}
-            </span>
+              <Sparkles size={isMobile ? 10 : 12} fill={badge.color} /> {badge.label}
+            </motion.span>
           )}
         </div>
 
         {/* User genre interest chips (from personalized DL output) */}
         {isPersonalized && topGenres.length > 0 && (
-          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.75rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Based on your love of:</span>
-            {topGenres.slice(0, 5).map(g => (
-              <button
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1.25rem', alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'center' }}>
+            <span style={{ fontSize: isMobile ? '0.7rem' : '0.75rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '0.25rem' }}>Based on your love of:</span>
+            {topGenres.slice(0, 5).map((g, i) => (
+              <motion.button
                 key={g}
+                initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 + (i * 0.05) }} whileTap={{ scale: 0.95 }}
                 onClick={() => setFilters(f => ({ ...f, genres: f.genres.includes(g) ? f.genres.filter(x => x !== g) : [...f.genres, g] }))}
                 style={{
-                  padding: '0.2rem 0.6rem', borderRadius: '9999px', fontSize: '0.72rem', fontWeight: 700,
-                  border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)',
-                  color: 'var(--accent)', cursor: 'pointer', transition: 'all 0.15s',
+                  padding: isMobile ? '0.25rem 0.75rem' : '0.3rem 0.85rem', borderRadius: '9999px', fontSize: isMobile ? '0.7rem' : '0.75rem', fontWeight: 700,
+                  border: `1px solid ${filters.genres.includes(g) ? 'var(--accent)' : 'var(--border)'}`, 
+                  background: filters.genres.includes(g) ? 'var(--accent)' : 'var(--bg-blur)',
+                  color: filters.genres.includes(g) ? '#fff' : 'var(--text-secondary)', 
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  boxShadow: filters.genres.includes(g) ? '0 4px 12px rgba(16, 185, 129, 0.25)' : 'none'
                 }}
+                onMouseEnter={e => { if(!filters.genres.includes(g)) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+                onMouseLeave={e => { if(!filters.genres.includes(g)) { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
               >
                 {g}
-              </button>
+              </motion.button>
             ))}
-          </div>
+          </motion.div>
         )}
-      </div>
+      </motion.div>
+
+      {/* ── Hero Carousel ── */}
+      {movies.length > 0 && !query && (
+        <HeroCarousel movies={movies} />
+      )}
 
       {/* Search + Filter row */}
-      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '2rem', alignItems: 'center' }}>
+      <div style={{ display: 'flex',gap: '0.75rem', marginBottom: '2rem', alignItems: 'center' , flexDirection: isMobile ? 'column' : 'row'}}>
         {/* Search with suggestions */}
         <div style={{ position: 'relative', flex: 1 }}>
           <form onSubmit={handleSearch} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '9999px', padding: isMobile ? '0.8rem 0.5rem' : '0.8rem 1.25rem', transition: 'border-color 0.2s' }}
             onFocus={() => setShowSuggestions(true)}
             onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setTimeout(() => setShowSuggestions(false), 150); }}>
-            <Search size={16} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+            <Search size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
             <input
               ref={searchRef}
               type="text"
@@ -424,14 +702,14 @@ function ExploreContent() {
 
       {/* Result count + mode indicator */}
       {!loading && movies.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '2rem', justifyContent: 'center' }}>
           {query ? (
             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
               <Search size={12} style={{ display: 'inline', marginRight: '0.3rem' }} />
               {movies.length} result{movies.length !== 1 ? 's' : ''} for &ldquo;{query}&rdquo;
             </span>
           ) : isPersonalized ? (
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' , border: '1px solid var(--border)', borderRadius: '9999px', padding: '0.25rem 0.65rem', justifyContent: 'center'}}>
               <TrendingUp size={12} /> {movies.length} personalized picks
             </span>
           ) : (

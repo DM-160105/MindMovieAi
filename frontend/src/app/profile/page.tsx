@@ -57,8 +57,12 @@ function ProfileContent() {
       {/* Profile header */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
         style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: isMobile ? '1.5rem' : '2.5rem' }}>
-        <div style={{ width: '110px', height: '110px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2.5rem', fontWeight: 900, color:'#787777ff', flexShrink: 0 ,border: '4px solid rgba(125, 125, 125, 0.14)',WebkitBackdropFilter: 'blur(10px)',backdropFilter: 'blur(10px)',backgroundColor: '--var(--glass-bg)'}}>
-          {(user?.display_name || user?.username || 'U').trim().split(/\s+/).map(word => word[0]).join('').toUpperCase()}
+        <div style={{ width: '110px', height: '110px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2.5rem', fontWeight: 900, color:'#787777ff', flexShrink: 0 ,border: '4px solid rgba(125, 125, 125, 0.14)',WebkitBackdropFilter: 'blur(10px)',backdropFilter: 'blur(10px)',backgroundColor: '--var(--glass-bg)', overflow: 'hidden'}}>
+          {user?.avatar_url ? (
+            <img src={user.avatar_url} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" />
+          ) : (
+            (user?.display_name || user?.username || 'U').trim().split(/\s+/).map(word => word[0]).join('').toUpperCase()
+          )}
         </div>
         <div>
           <h1 style={{ fontWeight: isMobile ? 800 : 900, fontSize: isMobile ? '1.5rem' : '1.75rem', color: '#787777ff', letterSpacing: '-0.02em' }}>
@@ -92,7 +96,7 @@ function ProfileContent() {
         <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}><Loader2 size={28} className="animate-spin" color="var(--accent)" /></div>
       ) : (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
             <StatCard label="Searches" value={history?.searches?.length ?? 0} icon={Search} color="var(--accent-2)" />
             <StatCard label="Activities" value={history?.activities?.length ?? 0} icon={Activity} color="var(--accent)" />
             <StatCard label="Sessions" value={history?.sessions?.length ?? 0} icon={User} color="var(--purple)" />

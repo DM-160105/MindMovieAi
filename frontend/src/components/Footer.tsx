@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Film, Github, Heart, Mail, ExternalLink, Sparkles } from 'lucide-react';
+import { Github, Heart, Mail, ExternalLink, Sparkles, ChevronsRight } from 'lucide-react';
 import useIsMobile from '@/hooks/useIsMobile';
 
 const footerLinks = {
@@ -16,6 +16,8 @@ const footerLinks = {
     { label: 'How It Works', href: '/information' },
   ],
 };
+
+
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
@@ -33,7 +35,7 @@ export default function Footer() {
           <div className="footer-brand">
             <Link href="/" className="footer-logo-link">
               
-                <img src="/logo.png" alt="Logo" width={40} height={40} style={{borderRadius: '999px'}} />
+                <img src="/logo.png" alt="Logo" width={40} height={40} style={{borderRadius: '999px', outline: '1px solid var(--logo-outline)', outlineOffset: '2px'}} />
            
               <span className="footer-logo-text">Mind Movie Ai</span>
             </Link>
@@ -54,10 +56,15 @@ export default function Footer() {
               <ul className="footer-links-list">
                 {footerLinks.product.map(({ label, href }) => (
                   <li key={label}>
-                    <Link href={href} className="footer-link">
-                      {label}
-                    </Link>
-                  </li>
+  <Link href={href} className="footer-link">
+    <div className="footer-link-inner">
+      <span className="chevron-icon">
+        <ChevronsRight size={12} />
+      </span>
+      {label}
+    </div>
+  </Link>
+</li>
                 ))}
               </ul>
             </div>
@@ -66,11 +73,16 @@ export default function Footer() {
               <h4 className="footer-col-title">Learn More</h4>
               <ul className="footer-links-list">
                 {footerLinks.company.map(({ label, href }) => (
-                  <li key={label}>
-                    <Link href={href} className="footer-link">
-                      {label}
-                    </Link>
-                  </li>
+                 <li key={label}>
+  <Link href={href} className="footer-link">
+    <div className="footer-link-inner">
+      <span className="chevron-icon">
+        <ChevronsRight size={12} />
+      </span>
+      {label}
+    </div>
+  </Link>
+</li>
                 ))}
               </ul>
             </div>
@@ -92,7 +104,7 @@ export default function Footer() {
                 <ExternalLink size={10} className="footer-ext-icon" />
               </a>
               <a
-                href="mailto:hello@mindmovieai.com"
+                href="mailto:mindmovieai16@gmail.com"
                 className="footer-social-btn"
                 title="Email us"
               >
@@ -103,11 +115,8 @@ export default function Footer() {
           </div>
         </div>
 
-        {/* ── Divider ────────────────────────────── */}
-        <div className="footer-divider" />
-
         {/* ── Bottom bar ─────────────────────────── */}
-        <div className="footer-bottom">
+        <div className="footer-bottom" style={{marginTop:'2rem'}}>
           <p className="footer-copyright">
             © {currentYear} Mind Movie Ai. Crafted with{' '}
             <Heart size={12} className="footer-heart" /> and AI.
@@ -118,19 +127,33 @@ export default function Footer() {
         </div>
          {/* ── Divider ────────────────────────────── */}
         <div className="footer-divider" style={{marginTop:'1rem'}} />
-
-        <div style={{justifyContent:'center', alignItems : 'center', display: 'flex', fontSize:'8rem', fontWeight:'800',WebkitTextFillColor:'transparent',backgroundClip:'text',backgroundImage:'linear-gradient(90deg, var(--accent), var(--purple), var(--accent-2))'}}>
-          Mind Movie Ai
-        </div>
-
       </div>
+
+         <div className='outfit-600'
+  style={{
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    textAlign: "center",
+    fontWeight: 750,
+    fontSize: "clamp(2.5rem, 10vw, 11rem)",
+    WebkitBackgroundClip: "text", 
+    backgroundClip: "text",
+    backgroundImage: "var(--footer-text)",
+    color: "transparent",
+    lineHeight: 0.9,
+    letterSpacing: "-0.007em",
+  }}
+>
+  Mind Movie AI
+</div>
 
       <style>{`
         /* ── Footer Component ─────────────────────────────── */
         .footer {
           position: relative;
           margin-top: 4rem;
-          background: rgba(15, 16, 18, 0.59);
+          background: var(--footer-bg);
           border-top: 1px solid var(--border);
           z-index: 2;
           overflow: hidden;
@@ -156,7 +179,7 @@ export default function Footer() {
         .footer-container {
           max-width: 1280px;
           margin: 0 auto;
-          padding: 3rem 1.5rem 1.5rem;
+          padding: 3rem 1.5rem 0rem;
         }
 
         /* ── Top section grid ─────────────────────── */
@@ -374,9 +397,25 @@ export default function Footer() {
           }
 
           .footer-container {
-            padding: 2rem 1.25rem 1.25rem;
+            padding: 2rem 1.25rem 0rem;
           }
         }
+          .footer-link-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chevron-icon {
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: all 0.25s ease;
+}
+
+.footer-link:hover .chevron-icon {
+  opacity: 1;
+  transform: translateX(0);
+}
 
         @media (max-width: 480px) {
           .footer-links-group {

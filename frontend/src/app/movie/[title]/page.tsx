@@ -135,7 +135,7 @@ export default function MovieDetailPage() {
 
       setLoading(false);
     })();
-  }, [decodedTitle, title]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [decodedTitle, title]);  
 
   const submitReview = async () => {
     if (!reviewText.trim()) { toast.error('Write something first'); return; }
@@ -182,14 +182,11 @@ export default function MovieDetailPage() {
 
   return (
     <div className="page-container" style={isMobile ? { padding: '1rem' } : undefined}>
-      {/* Back button */}
-      <button onClick={() => router.back()} className="btn-secondary" style={{ marginBottom: '2rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-        <ArrowLeft size={15} /> Back
-      </button>
+    
 
       {/* Hero section */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
-        style={isMobile ? { display: 'grid', gridTemplateRows: 'auto 1fr', gap: '2.5rem', marginBottom: '3rem', alignItems: 'start' } : { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2.5rem', marginBottom: '3rem', alignItems: 'start' }}>
+        style={isMobile ? { display: 'grid', gridTemplateRows: 'auto 1fr', gap: '2.5rem', marginBottom: '3rem', alignItems: 'start',marginTop: '10px' } : { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2.5rem', marginBottom: '3rem', alignItems: 'start',marginTop: '20px' }}>
         {/* Poster */}
         {isMobile ? (  <div style={{ display: 'flex', alignItems: 'center',justifyContent: 'center',flex:"inline-flex"}}><div style={{ width:'200px', flexShrink: 0}}>
           <div className="card" style={{ overflow: 'hidden', borderRadius: '1rem', aspectRatio: '2/3', minHeight: '280px'}}>

@@ -4,11 +4,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { motion } from 'framer-motion';
-import { Loader2, Film } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import ShapeGrid from '@/components/ShapeGrid';
+import { useGoogleLogin } from '@react-oauth/google';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -37,18 +37,34 @@ export default function LoginPage() {
     }
   };
 
+  const handleGoogleLogin = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      setLoading(true);
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/auth/google`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: tokenResponse.access_token }),
+        });
+        if (!res.ok) throw new Error('Google Login Failed');
+        const data = await res.json();
+        localStorage.setItem('stremflix_token', data.access_token);
+        toast.success('Welcome via Google!');
+        window.location.href = '/explore'; 
+      } catch (err) {
+        toast.error('Google authentication failed');
+      } finally {
+        setLoading(false);
+      }
+    },
+    onError: () => {
+      toast.error('Google login was cancelled or failed.');
+    }
+  });
+
   return (
     <>
     <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: -1 }}>
-        <ShapeGrid 
-          speed={1}
-          squareSize={35}
-          direction="up"
-          borderColor="rgba(255,255,255,0.05)"
-          hoverFillColor="rgba(255,255,255,0.1)"
-          shape="hexagon"
-          hoverTrailAmount={2}
-        />
       </div>
     <div style={{ minHeight: isMobile ? '90vh' : '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem 1.5rem' }}>
       <motion.div
@@ -68,36 +84,48 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>Username</label>
+          <div className="input-group-floating">
             <input
               id="login-username"
               type="text"
               autoComplete="username"
               value={form.username}
               onChange={(e) => setForm(p => ({ ...p, username: e.target.value }))}
-              placeholder="Your username"
-              className="input-base"
+              placeholder=" "
+              className="input-floating"
               required
             />
+            <label htmlFor="login-username" className="label-floating">Username or Email</label>
           </div>
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>Password</label>
+          <div className="input-group-floating">
             <input
               id="login-password"
               type="password"
               autoComplete="current-password"
               value={form.password}
               onChange={(e) => setForm(p => ({ ...p, password: e.target.value }))}
-              placeholder="••••••••"
-              className="input-base"
+              placeholder=" "
+              className="input-floating"
               required
             />
+            <label htmlFor="login-password" className="label-floating">Password</label>
           </div>
           <button type="submit" disabled={loading} className="btn-primary" style={{ width: '100%', marginTop: '0.5rem', padding: '0.875rem' }}>
             {loading ? <><Loader2 size={16} className="animate-spin" /> Signing in…</> : 'Sign In'}
           </button>
         </form>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', margin: '1.5rem 0' }}>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }}></div>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>OR</span>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }}></div>
+        </div>
+
+        <button type="button" onClick={() => handleGoogleLogin()} disabled={loading} className="btn-secondary" style={{ width: '100%', padding: '0.875rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', background: '#fff', color: '#000', border: 'none' }}>
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" style={{ width: 20, height: 20 }} />
+           <span style={{ fontWeight: 600 }}>Continue with Google</span>
+        </button>
 
         <p style={{ textAlign: 'center', marginTop: '1.5rem', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
           No account?{' '}

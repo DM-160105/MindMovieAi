@@ -1,15 +1,14 @@
 """
-MongoDB-compatible model definitions using Pydantic.
-These replace the old SQLAlchemy ORM models.
-Each model has a to_dict() helper for API serialization.
+MongoDB Document Factories & Serialization Helpers.
+
+Each `new_*_doc()` function returns a plain dict ready for MongoDB insertion.
+`serialize_doc()` and `user_to_dict()` prepare documents for JSON API responses.
 """
+
 import datetime
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from bson import ObjectId
 
-
-# ─── Collection Name Constants ──────────────────────────────────────────────────
+# ── Collection Name Constants ────────────────────────────────────────────────
 USERS_COLLECTION = "users"
 RATINGS_COLLECTION = "ratings"
 MOVIE_REVIEWS_COLLECTION = "movie_reviews"
@@ -21,30 +20,23 @@ WATCHLIST_COLLECTION = "watchlist"
 YOUTUBE_COMMENTS_COLLECTION = "youtube_comments"
 
 
-# ─── Helper ─────────────────────────────────────────────────────────────────────
+# ── Serialization ────────────────────────────────────────────────────────────
 def serialize_doc(doc: dict) -> dict:
-    """Convert MongoDB document to JSON-serializable dict."""
+    """Convert a MongoDB document to a JSON-serializable dict."""
     if doc is None:
         return None
     doc = dict(doc)
-    if "_id" in doc:
-        doc["_id"] = str(doc["_id"])
-    # Convert datetime objects to ISO strings for JSON
     for key, val in doc.items():
-        if isinstance(val, datetime.datetime):
-            doc[key] = val.isoformat()
-        elif isinstance(val, ObjectId):
+        if isinstance(val, ObjectId):
             doc[key] = str(val)
+        elif isinstance(val, datetime.datetime):
+            doc[key] = val.isoformat()
     return doc
 
 
-def new_user_doc(
-    username: str,
-    hashed_password: str,
-    email: str = None,
-    display_name: str = None,
-) -> dict:
-    """Create a new user document for MongoDB insertion."""
+# ── Document Factories ───────────────────────────────────────────────────────
+def new_user_doc(username: str, hashed_password: str, email: str = None, display_name: str = None) -> dict:
+    """Create a new user document."""
     return {
         "username": username,
         "email": email,
@@ -55,6 +47,8 @@ def new_user_doc(
         "is_active": True,
         "is_admin": False,
         "onboarding_completed": False,
+        "is_verified": False,
+        "auth_provider": "local",
         "age": None,
         "gender": None,
         "favorite_genres": None,
@@ -64,6 +58,7 @@ def new_user_doc(
 
 
 def new_rating_doc(user_id, movie_id: int, movie_title: str, rating: float) -> dict:
+    """Create a movie rating document."""
     return {
         "user_id": user_id,
         "movie_id": movie_id,
@@ -75,6 +70,7 @@ def new_rating_doc(user_id, movie_id: int, movie_title: str, rating: float) -> d
 
 def new_review_doc(user_id, movie_title: str, review_text: str,
                    sentiment_label=None, sentiment_confidence=None, sentiment_score=None) -> dict:
+    """Create a movie review document with optional sentiment metadata."""
     return {
         "user_id": user_id,
         "movie_title": movie_title,
@@ -87,6 +83,7 @@ def new_review_doc(user_id, movie_title: str, review_text: str,
 
 
 def new_search_doc(user_id, query: str, results_count: int = 0) -> dict:
+    """Create a search history document."""
     return {
         "user_id": user_id,
         "query": query,
@@ -97,6 +94,7 @@ def new_search_doc(user_id, query: str, results_count: int = 0) -> dict:
 
 def new_activity_doc(user_id, activity_type: str, page_url=None,
                      movie_title=None, extra_data=None, duration_seconds=None) -> dict:
+    """Create a user activity tracking document."""
     return {
         "user_id": user_id,
         "activity_type": activity_type,
@@ -109,6 +107,7 @@ def new_activity_doc(user_id, activity_type: str, page_url=None,
 
 
 def new_session_doc(user_id, token_hash: str, ip_address=None, user_agent=None) -> dict:
+    """Create a login session document."""
     return {
         "user_id": user_id,
         "token_hash": token_hash,
@@ -121,6 +120,7 @@ def new_session_doc(user_id, token_hash: str, ip_address=None, user_agent=None) 
 
 
 def new_favorite_doc(user_id, movie_title: str, poster_url=None) -> dict:
+    """Create a favorites document."""
     return {
         "user_id": user_id,
         "movie_title": movie_title,
@@ -130,6 +130,7 @@ def new_favorite_doc(user_id, movie_title: str, poster_url=None) -> dict:
 
 
 def new_watchlist_doc(user_id, movie_title: str, poster_url=None) -> dict:
+    """Create a watchlist document."""
     return {
         "user_id": user_id,
         "movie_title": movie_title,
@@ -140,6 +141,7 @@ def new_watchlist_doc(user_id, movie_title: str, poster_url=None) -> dict:
 
 def new_youtube_comment_doc(user_id, video_title: str, text: str,
                             video_id=None, sentiment_label=None, sentiment_score=None) -> dict:
+    """Create a YouTube comment document with optional sentiment metadata."""
     return {
         "user_id": user_id,
         "video_title": video_title,
@@ -161,11 +163,19 @@ def user_to_dict(user_doc: dict) -> dict:
         "email": user_doc.get("email"),
         "display_name": user_doc.get("display_name"),
         "avatar_url": user_doc.get("avatar_url"),
-        "created_at": user_doc["created_at"].isoformat() if isinstance(user_doc.get("created_at"), datetime.datetime) else user_doc.get("created_at"),
+        "created_at": (
+            user_doc["created_at"].isoformat()
+            if isinstance(user_doc.get("created_at"), datetime.datetime)
+            else user_doc.get("created_at")
+        ),
         "onboarding_completed": user_doc.get("onboarding_completed", False),
+        "is_verified": user_doc.get("is_verified", False),
+        "auth_provider": user_doc.get("auth_provider", "local"),
         "favorite_genres": user_doc.get("favorite_genres"),
         "disliked_genres": user_doc.get("disliked_genres"),
         "movie_sources": user_doc.get("movie_sources"),
         "age": user_doc.get("age"),
         "gender": user_doc.get("gender"),
+        "location_lat": user_doc.get("location_lat"),
+        "location_lon": user_doc.get("location_lon"),
     }

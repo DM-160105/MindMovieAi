@@ -5,7 +5,7 @@ Architecture: Embedding → LSTM → Dense → Dropout → Output
 """
 
 import os
-import json
+
 import numpy as np
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF info logs
@@ -26,7 +26,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARTIFACTS_DIR = os.path.join(BASE_DIR, 'artifacts')
 MODEL_PATH = os.path.join(ARTIFACTS_DIR, MODEL_NAME)
 
-# ── Load IMDb word index for text encoding ──
 _word_index = None
 
 def _get_word_index():

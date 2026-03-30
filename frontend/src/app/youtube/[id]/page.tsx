@@ -5,7 +5,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import api, { trackActivity } from '@/lib/api';
 import { motion } from 'framer-motion';
-import { Play, ExternalLink, ThumbsUp, ThumbsDown, Eye, MessageSquare, AlertTriangle, Send, Loader2, ArrowLeft, TrendingUp } from 'lucide-react';
+import { ThumbsUp, ThumbsDown, Eye, MessageSquare, AlertTriangle, Send, Loader2, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -130,21 +130,15 @@ export default function YouTubeVideoPage() {
     <div className="page-container">
       <div style={{ display: 'grid', gap: '2rem', alignItems: 'start',marginTop: '1.5rem' }}>
         {/* Main content */}
-        <div>
           {/* Player */}
           <div style={{ position: 'relative', paddingTop: '56.25%', background: '#000', borderRadius: '1rem', overflow: 'hidden', marginBottom: '1.25rem' }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={thumb} alt={video.title} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { (e.target as HTMLImageElement).style.opacity = '0.3'; }} />
-            {/* YouTube Play button */}
-            <a href={youtubeUrl} target="_blank" rel="noopener noreferrer"
-              style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.35)', textDecoration: 'none' }}>
-              <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.96 }}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', borderRadius: '0.5rem', padding: '0.75rem 1.75rem' }}>
-                <Play size={28} color="#fff" fill="#fff" />
-                <span style={{ color: '#fff', fontWeight: 800, fontSize: '1rem' }}>Play on YouTube</span>
-                <ExternalLink size={14} color="#fff" />
-              </motion.div>
-            </a>
+            <iframe
+              src={`https://www.youtube.com/embed/${id}?autoplay=1`}
+              title={video.title || titleParam}
+              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0 }}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
           </div>
 
           {/* Title & meta */}
@@ -261,7 +255,6 @@ export default function YouTubeVideoPage() {
               </div>
             )}
           </div>
-        </div>
 
         {/* Sidebar: Recommended */}
         {isMobile ? undefined : (

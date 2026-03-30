@@ -4,10 +4,10 @@ Trained on IMDb Movie Reviews dataset for binary sentiment classification.
 Architecture: Embedding → BiLSTM → FC layers → Output
 """
 
-import os
-import json
-import numpy as np
 import hashlib
+import os
+
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -42,7 +42,7 @@ class SentimentBiLSTM(nn.Module):
     
     def __init__(self, vocab_size=VOCAB_SIZE, embedding_dim=EMBEDDING_DIM,
                  hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT_RATE):
-        super(SentimentBiLSTM, self).__init__()
+        super().__init__()
         
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.lstm = nn.LSTM(
@@ -89,11 +89,7 @@ def encode_text_manual(text: str) -> np.ndarray:
 
 
 def load_data():
-    """
-    Generate dummy IMDb-like dataset.
-    Normally we would load `keras.datasets.imdb`, but TensorFlow Native MacOS
-    aborts prevent that here. Generating localized test data.
-    """
+    """Generate dummy IMDb-like data for PyTorch training."""
     print("Generating dummy data for PyTorch training (TensorFlow imports disabled).")
     x_train = np.random.randint(3, VOCAB_SIZE, size=(1000, MAX_LEN))
     y_train = np.random.randint(0, 2, size=(1000,))

@@ -1,10 +1,10 @@
 'use client';
 
-import Link from 'next/link';
+
 import { useAuth } from '@/context/AuthContext';
 import PosterImage from '@/components/PosterImage';
 import { motion } from 'framer-motion';
-import { Star, Film } from 'lucide-react';
+import { Star } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { trackActivity } from '@/lib/api';
 

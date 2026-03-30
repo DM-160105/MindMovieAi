@@ -17,6 +17,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Sync from localStorage on mount
   useEffect(() => {
     const saved = (localStorage.getItem('stremflix_theme') as Theme) || 'dark';
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(saved);
     applyTheme(saved, false);
   }, []);

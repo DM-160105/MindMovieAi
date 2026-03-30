@@ -19,3 +19,5 @@ numpy
 pymongo[srv]
 python-dotenv
 huggingface_hub
+google-auth
+httpx

@@ -19,7 +19,7 @@ from fastapi import Depends
 
 load_dotenv()
 
-from database import get_db, db as mongodb
+from database import get_db
 import models
 import auth
 
@@ -28,9 +28,10 @@ import ml.sentiment as sentiment_analysis
 import ml.fake_engagement as fake_engagement
 import ml.predict_popularity as popularity_model
 import ml.poster_classifier as poster_classifier
-import ml.user_preference as user_preference
 import ml.youtube_ml as youtube_ml
 import ml.dl_recommender as dl_recommender
+import ml.hf_sync as hf_sync
+import ml.context_recommender as context_recommender
 
 # ─── Environment Variables ──────────────────────────────────────────────────────
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "8265bd1679663a7ea12ac168da84d2e8")
@@ -75,6 +76,7 @@ try:
     movies = pd.DataFrame(movies_dict)
     if 'title' in movies.columns:
         movies['title_lower'] = movies['title'].astype(str).str.lower()
+        movies['title_acronym'] = movies['title_lower'].apply(lambda x: ''.join([w[0] for w in str(x).split() if w]))
     index = faiss.read_index(idx_path)
     print("✅ Artifacts loaded successfully.")
 except Exception as e:
@@ -165,6 +167,8 @@ class PreferencesUpdate(BaseModel):
     favorite_genres: Optional[str] = None
     disliked_genres: Optional[str] = None
     movie_sources: Optional[str] = None
+    location_lat: Optional[float] = None
+    location_lon: Optional[float] = None
     onboarding_completed: bool = True
 
 class ReviewCreate(BaseModel):
@@ -237,6 +241,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
     user = db["users"].find_one({"username": username})
     if user is None:
         raise credentials_exception
+    
+    if not user.get("is_verified", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Account not verified. Please verify your email first.",
+        )
     return user
 
 def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optional), db=Depends(get_db)):
@@ -278,10 +288,25 @@ def get_favicon():
 
 
 
+import re
+import random
+import datetime
+from mailer import send_otp_email
+
 # ─── AUTH ENDPOINTS ───
+
+class VerifyOTPRequest(BaseModel):
+    username: str
+    otp_code: str
+
+class GoogleAuthRequest(BaseModel):
+    token: str
 
 @app.post("/register")
 def register(user: UserCreate, db=Depends(get_db)):
+    if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#])[A-Za-z\d@$!%*?&#]{8,}$', user.password):
+        raise HTTPException(status_code=400, detail="Password must contain an uppercase letter, lowercase letter, a digit, a special character, and be at least 8 characters long.")
+
     db_user = db["users"].find_one({"username": user.username})
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
@@ -298,8 +323,21 @@ def register(user: UserCreate, db=Depends(get_db)):
         email=user.email,
         display_name=user.display_name or user.username,
     )
+    
+    otp_code = str(random.randint(100000, 999999))
+    new_user["otp_code"] = otp_code
+    new_user["otp_expires_at"] = datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
+    
     result = db["users"].insert_one(new_user)
     new_user["_id"] = result.inserted_id
+    
+    if user.email:
+        send_otp_email(user.email, otp_code)
+        return {
+            "message": "User registered successfully. Please verify your email.",
+            "user": models.user_to_dict(new_user),
+            "requires_verification": True
+        }
     
     access_token = auth.create_access_token(data={"sub": new_user["username"], "user_id": str(new_user["_id"])})
     
@@ -307,7 +345,8 @@ def register(user: UserCreate, db=Depends(get_db)):
         "message": "User registered successfully",
         "user": models.user_to_dict(new_user),
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "requires_verification": False
     }
 
 
@@ -317,9 +356,16 @@ def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db=Depends(get_db)
 ):
-    user = db["users"].find_one({"username": form_data.username})
+    query = {"email": form_data.username} if "@" in form_data.username else {"username": form_data.username}
+    user = db["users"].find_one(query)
     if not user or not auth.verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
+    
+    if not user.get("is_verified", False):
+        raise HTTPException(
+            status_code=403, 
+            detail="Account not verified. Please check your email for the verification code."
+        )
     
     access_token_expires = auth.timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = auth.create_access_token(
@@ -339,6 +385,87 @@ def login_for_access_token(
         "token_type": "bearer",
         "user": models.user_to_dict(user)
     }
+
+@app.post("/verify-otp")
+def verify_otp(req: VerifyOTPRequest, db=Depends(get_db)):
+    query = {"email": req.username} if "@" in req.username else {"username": req.username}
+    user = db["users"].find_one(query)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("is_verified"):
+        return {"message": "Account already verified"}
+        
+    if user.get("otp_code") != req.otp_code:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+        
+    if user.get("otp_expires_at") and user.get("otp_expires_at") < datetime.datetime.utcnow():
+        raise HTTPException(status_code=400, detail="OTP has expired")
+        
+    db["users"].update_one({"_id": user["_id"]}, {"$set": {"is_verified": True, "otp_code": None}})
+    
+    access_token = auth.create_access_token(data={"sub": user["username"], "user_id": str(user["_id"])})
+    
+    return {
+        "message": "Email verified successfully",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": models.user_to_dict(user)
+    }
+
+@app.post("/auth/google")
+def google_auth(req: GoogleAuthRequest, db=Depends(get_db)):
+    try:
+        import requests
+        resp = requests.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {req.token}"}
+        )
+        if not resp.ok:
+            raise ValueError("Invalid Google access token")
+        idinfo = resp.json()
+        email = idinfo.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="Google token did not contain an email")
+            
+        user = db["users"].find_one({"email": email})
+        if not user:
+            # Register new Google user
+            base_username = email.split("@")[0]
+            username = base_username
+            counter = 1
+            while db["users"].find_one({"username": username}):
+                username = f"{base_username}{counter}"
+                counter += 1
+                
+            new_user = models.new_user_doc(
+                username=username,
+                hashed_password="oauth_managed",
+                email=email,
+                display_name=idinfo.get("name") or username,
+            )
+            new_user["is_verified"] = True
+            new_user["auth_provider"] = "google"
+            new_user["avatar_url"] = idinfo.get("picture")
+            
+            result = db["users"].insert_one(new_user)
+            new_user["_id"] = result.inserted_id
+            user = new_user
+            
+        # Issue JWT
+        access_token_expires = auth.timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = auth.create_access_token(
+            data={"sub": user["username"], "user_id": str(user["_id"])},
+            expires_delta=access_token_expires
+        )
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": models.user_to_dict(user)
+        }
+        
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
 
 
 @app.get("/me")
@@ -388,9 +515,19 @@ def _save_preferences(prefs: PreferencesUpdate, current_user: dict, db):
         update_fields["disliked_genres"] = to_csv(prefs.disliked_genres)
     if prefs.movie_sources is not None:
         update_fields["movie_sources"] = to_csv(prefs.movie_sources)
+    if prefs.location_lat is not None:
+        update_fields["location_lat"] = prefs.location_lat
+    if prefs.location_lon is not None:
+        update_fields["location_lon"] = prefs.location_lon
+    
     update_fields["onboarding_completed"] = prefs.onboarding_completed
     
     db["users"].update_one({"_id": current_user["_id"]}, {"$set": update_fields})
+    
+    # Sync this updated profile to the Hugging Face CSV in the background
+    updated_doc = db["users"].find_one({"_id": current_user["_id"]})
+    if updated_doc:
+        hf_sync.queue_user_sync(updated_doc)
 
 
 @app.put("/me/preferences")
@@ -513,7 +650,9 @@ def predict_user_preferences(
     searches = list(db["search_history"].find({"user_id": current_user["_id"]}))
     search_queries = [s.get("query") for s in searches]
     
-    result = user_preference.predict_preferences(ratings_list, search_queries, movies)
+    # Generate context-aware recommendations utilizing time of day and collaborative context
+    user_id_str = str(current_user["_id"])
+    result = context_recommender.get_context_recommendations(user_id_str, ratings_list, search_queries, movies)
     return result
 
 
@@ -650,7 +789,8 @@ def get_movies(
         q = search.strip().lower()
         title_match = df['title'].str.contains(q, case=False, na=False)
         tags_match = df['tags'].str.contains(q, case=False, na=False) if 'tags' in df.columns else pd.Series([False] * len(df), index=df.index)
-        match_df = df[title_match | tags_match].copy()
+        acronym_match = (df['title_acronym'].str.lower() == q) if 'title_acronym' in df.columns else pd.Series([False] * len(df), index=df.index)
+        match_df = df[title_match | tags_match | acronym_match].copy()
         
         if len(match_df) < 5:
             import difflib
@@ -1092,7 +1232,7 @@ def get_movie_details(title: str):
             languages = [l['name'] for l in parse_json(row.get('spoken_languages', '[]'))]
             companies = [c['name'] for c in parse_json(row.get('production_companies', '[]'))]
             keywords = [k['name'] for k in parse_json(row.get('keywords', '[]'))]
-            movie_id = int(row['id']) if pd.notna(row.get('id')) else None
+            int(row['id']) if pd.notna(row.get('id')) else None
             poster = fetch_poster(row_main)
             release_date = str(row['release_date']) if pd.notna(row.get('release_date')) else None
             year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
@@ -1485,13 +1625,67 @@ def admin_users(
     if age is not None:
         query_filter["age"] = age
         
+    pipeline = [
+        {"$match": query_filter},
+        {"$sort": {"_id": -1}},
+        {"$skip": offset},
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "user_sessions",
+                "localField": "_id",
+                "foreignField": "user_id",
+                "as": "sessions"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "user_activities",
+                "let": {"uid": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$uid"]}}}, {"$count": "count"}],
+                "as": "activities_count"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "ratings",
+                "let": {"uid": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$uid"]}}}, {"$count": "count"}],
+                "as": "ratings_count"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "favorites",
+                "let": {"uid": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$uid"]}}}, {"$count": "count"}],
+                "as": "favorites_count"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "watchlist",
+                "let": {"uid": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$uid"]}}}, {"$count": "count"}],
+                "as": "watchlist_count"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "youtube_comments",
+                "let": {"uid": "$_id"},
+                "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$uid"]}}}, {"$count": "count"}],
+                "as": "comments_count"
+            }
+        }
+    ]
+    
+    users_cursor = db["users"].aggregate(pipeline)
     total = db["users"].count_documents(query_filter)
-    users = list(db["users"].find(query_filter).sort("_id", -1).skip(offset).limit(limit))
     
     result = []
-    for u in users:
-        uid = u["_id"]
-        sessions = list(db["user_sessions"].find({"user_id": uid}))
+    for u in users_cursor:
+        sessions = u.get("sessions", [])
         last_login = None
         total_session_mins = 0
         if sessions:
@@ -1502,22 +1696,25 @@ def admin_users(
                 if s.get("last_active") and s.get("login_at"):
                     delta = (s["last_active"] - s["login_at"]).total_seconds() / 60
                     total_session_mins += max(0, delta)
-        activity_count = db["user_activities"].count_documents({"user_id": uid})
-        rating_count = db["ratings"].count_documents({"user_id": uid})
-        fav_count = db["favorites"].count_documents({"user_id": uid})
-        wl_count = db["watchlist"].count_documents({"user_id": uid})
-        comment_count = db["youtube_comments"].count_documents({"user_id": uid})
+        
         result.append({
-            "id": str(uid), "username": u.get("username"),
-            "display_name": u.get("display_name"), "email": u.get("email"),
-            "gender": u.get("gender"), "age": u.get("age"),
+            "id": str(u["_id"]), 
+            "username": u.get("username"),
+            "display_name": u.get("display_name"), 
+            "email": u.get("email"),
+            "gender": u.get("gender"), 
+            "age": u.get("age"),
             "favorite_genres": u.get("favorite_genres"),
             "is_admin": u.get("is_admin", False),
             "created_at": u["created_at"].isoformat() if u.get("created_at") else None,
-            "last_login": last_login, "total_session_mins": round(total_session_mins, 1),
-            "session_count": len(sessions), "activity_count": activity_count,
-            "rating_count": rating_count, "favorites_count": fav_count,
-            "watchlist_count": wl_count, "comment_count": comment_count,
+            "last_login": last_login, 
+            "total_session_mins": round(total_session_mins, 1),
+            "session_count": len(sessions), 
+            "activity_count": u.get("activities_count", [{}])[0].get("count", 0) if u.get("activities_count") else 0,
+            "rating_count": u.get("ratings_count", [{}])[0].get("count", 0) if u.get("ratings_count") else 0,
+            "favorites_count": u.get("favorites_count", [{}])[0].get("count", 0) if u.get("favorites_count") else 0,
+            "watchlist_count": u.get("watchlist_count", [{}])[0].get("count", 0) if u.get("watchlist_count") else 0,
+            "comment_count": u.get("comments_count", [{}])[0].get("count", 0) if u.get("comments_count") else 0,
         })
     return {"users": result, "total": total}
 
@@ -1528,27 +1725,43 @@ def admin_activities(
     email: Optional[str] = None, name: Optional[str] = None,
     _=Depends(require_admin), db=Depends(get_db)
 ):
-    pipeline = []
     match_stage = {}
     if activity_type:
         match_stage["activity_type"] = activity_type
-    if match_stage:
-        pipeline.append({"$match": match_stage})
-    pipeline.append({"$sort": {"timestamp": -1}})
-    pipeline.append({"$skip": offset})
-    pipeline.append({"$limit": limit})
+        
+    pipeline = [
+        {"$match": match_stage},
+        {"$sort": {"timestamp": -1}},
+        {"$skip": offset},
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "user_id",
+                "foreignField": "_id",
+                "as": "user_docs"
+            }
+        },
+        {
+            "$addFields": {
+                "username": {
+                    "$let": {
+                        "vars": {"u": {"$arrayElemAt": ["$user_docs", 0]}},
+                        "in": {"$ifNull": ["$$u.display_name", {"$ifNull": ["$$u.username", "Anonymous"]}]}
+                    }
+                }
+            }
+        }
+    ]
     
     activities = list(db["user_activities"].aggregate(pipeline))
     total = db["user_activities"].count_documents(match_stage if match_stage else {})
+    
     result = []
     for a in activities:
-        user_name = "Anonymous"
-        owner = db["users"].find_one({"_id": a.get("user_id")})
-        if owner:
-            user_name = owner.get("display_name") or owner.get("username") or "Anonymous"
         result.append({
             "id": str(a["_id"]), "user_id": str(a.get("user_id")),
-            "username": user_name, "activity_type": a.get("activity_type"),
+            "username": a.get("username", "Anonymous"), "activity_type": a.get("activity_type"),
             "page_url": a.get("page_url"), "movie_title": a.get("movie_title"),
             "duration_seconds": a.get("duration_seconds"),
             "timestamp": a["timestamp"].isoformat() if a.get("timestamp") else None,
@@ -1564,18 +1777,41 @@ def admin_comments(
     query_filter = {}
     if sentiment:
         query_filter["sentiment_label"] = sentiment
+        
+    pipeline = [
+        {"$match": query_filter},
+        {"$sort": {"timestamp": -1}},
+        {"$skip": offset},
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "user_id",
+                "foreignField": "_id",
+                "as": "user_docs"
+            }
+        },
+        {
+            "$addFields": {
+                "author": {
+                    "$let": {
+                        "vars": {"u": {"$arrayElemAt": ["$user_docs", 0]}},
+                        "in": {"$ifNull": ["$$u.display_name", {"$ifNull": ["$$u.username", "Anonymous"]}]}
+                    }
+                }
+            }
+        }
+    ]
+    
+    comments = list(db["youtube_comments"].aggregate(pipeline))
     total = db["youtube_comments"].count_documents(query_filter)
-    comments = list(db["youtube_comments"].find(query_filter).sort("timestamp", -1).skip(offset).limit(limit))
+    
     result = []
     for c in comments:
-        author = "Anonymous"
-        owner = db["users"].find_one({"_id": c.get("user_id")})
-        if owner:
-            author = owner.get("display_name") or owner.get("username") or "Anonymous"
         result.append({
             "id": str(c["_id"]), "video_title": c.get("video_title"),
             "text": c.get("text"), "sentiment_label": c.get("sentiment_label"),
-            "sentiment_score": c.get("sentiment_score"), "author": author,
+            "sentiment_score": c.get("sentiment_score"), "author": c.get("author", "Anonymous"),
             "user_id": str(c.get("user_id")),
             "timestamp": c["timestamp"].isoformat() if c.get("timestamp") else None,
         })
@@ -1586,7 +1822,28 @@ def admin_movies(
     sort_by: str = "most_clicked", movie_type: Optional[str] = None,
     limit: int = 100, _=Depends(require_admin), db=Depends(get_db)
 ):
-    from collections import Counter
+    # Aggregation for counts directly in MongoDB
+    pipeline_clicks = [
+        {"$match": {"activity_type": "movie_click", "movie_title": {"$ne": None}}},
+        {"$group": {"_id": "$movie_title", "clicks": {"$sum": 1}}}
+    ]
+    clicks_data = {item["_id"]: item["clicks"] for item in db["user_activities"].aggregate(pipeline_clicks)}
+    
+    pipeline_favs = [
+        {"$match": {"movie_title": {"$ne": None}}},
+        {"$group": {"_id": "$movie_title", "favorites": {"$sum": 1}}}
+    ]
+    fav_data = {item["_id"]: item["favorites"] for item in db["favorites"].aggregate(pipeline_favs)}
+    
+    pipeline_wl = [
+        {"$match": {"movie_title": {"$ne": None}}},
+        {"$group": {"_id": "$movie_title", "watchlist": {"$sum": 1}}}
+    ]
+    wl_data = {item["_id"]: item["watchlist"] for item in db["watchlist"].aggregate(pipeline_wl)}
+    
+    all_titles = set(clicks_data.keys()).union(fav_data.keys()).union(wl_data.keys())
+    
+    # Filter by type if needed
     allowed_titles = None
     if movie_type == 'hollywood' and tmdb_full_data is not None:
         allowed_titles = set(tmdb_full_data['title'].dropna().tolist())
@@ -1594,34 +1851,31 @@ def admin_movies(
         allowed_titles = set(bolly_df_full['title_x'].dropna().tolist())
     elif movie_type == 'anime' and anime_df_full is not None:
         allowed_titles = set(anime_df_full['Name'].dropna().tolist())
-        
-    activities = list(db["user_activities"].find({"activity_type": "movie_click", "movie_title": {"$ne": None}}, {"movie_title": 1}))
-    clicks_counter = Counter([a["movie_title"] for a in activities])
     
-    favorites = list(db["favorites"].find({"movie_title": {"$ne": None}}, {"movie_title": 1}))
-    fav_counter = Counter([f["movie_title"] for f in favorites])
-    
-    watchlists = list(db["watchlist"].find({"movie_title": {"$ne": None}}, {"movie_title": 1}))
-    wl_counter = Counter([w["movie_title"] for w in watchlists])
-    
-    all_titles = set(clicks_counter.keys()).union(fav_counter.keys()).union(wl_counter.keys())
     if allowed_titles is not None:
         all_titles = all_titles.intersection(allowed_titles)
         
-    results = [{"title": t, "clicks": clicks_counter.get(t, 0), "favorites": fav_counter.get(t, 0), "watchlist": wl_counter.get(t, 0)} for t in all_titles]
+    results = [{"title": t, "clicks": clicks_data.get(t, 0), "favorites": fav_data.get(t, 0), "watchlist": wl_data.get(t, 0)} for t in all_titles]
     sort_key = {"most_clicked": "clicks", "most_favorite": "favorites", "most_watchlist": "watchlist"}.get(sort_by, "clicks")
     results.sort(key=lambda x: x[sort_key], reverse=True)
     return {"movies": results[:limit]}
 
 @app.get("/admin/youtube")
 def admin_youtube_stats(sort_by: str = "most_clicked", limit: int = 100, _=Depends(require_admin), db=Depends(get_db)):
-    from collections import Counter
-    activities = list(db["user_activities"].find({"activity_type": "youtube_video", "movie_title": {"$ne": None}}, {"movie_title": 1}))
-    clicks_counter = Counter([a["movie_title"] for a in activities])
-    comments = list(db["youtube_comments"].find({"video_title": {"$ne": None}}, {"video_title": 1}))
-    comments_counter = Counter([c["video_title"] for c in comments])
-    all_titles = set(clicks_counter.keys()).union(comments_counter.keys())
-    results = [{"title": t, "clicks": clicks_counter.get(t, 0), "comments": comments_counter.get(t, 0)} for t in all_titles]
+    pipeline_clicks = [
+        {"$match": {"activity_type": "youtube_video", "movie_title": {"$ne": None}}},
+        {"$group": {"_id": "$movie_title", "clicks": {"$sum": 1}}}
+    ]
+    clicks_data = {item["_id"]: item["clicks"] for item in db["user_activities"].aggregate(pipeline_clicks)}
+    
+    pipeline_comments = [
+        {"$match": {"video_title": {"$ne": None}}},
+        {"$group": {"_id": "$video_title", "comments": {"$sum": 1}}}
+    ]
+    comments_data = {item["_id"]: item["comments"] for item in db["youtube_comments"].aggregate(pipeline_comments)}
+    
+    all_titles = set(clicks_data.keys()).union(comments_data.keys())
+    results = [{"title": t, "clicks": clicks_data.get(t, 0), "comments": comments_data.get(t, 0)} for t in all_titles]
     sort_key = {"most_clicked": "clicks", "most_commented": "comments"}.get(sort_by, "clicks")
     results.sort(key=lambda x: x[sort_key], reverse=True)
     return {"youtube_videos": results[:limit]}
@@ -1763,6 +2017,242 @@ def analyze_youtube_video_detail(video_id: str, db=Depends(get_db)):
         "is_suspicious": fake["is_suspicious"], "flags": fake["flags"],
         "confidence": fake["confidence"], "sentiment_summary": sentiment_summary,
     }
+
+
+
+# ═══════════════════════════════════════════════════
+# ─── EMOTIONAL ARC ENDPOINTS ───
+# ═══════════════════════════════════════════════════
+
+import resource
+import pickle as _pickle
+import base64 as _base64
+
+import ml.mood_arc as mood_arc
+
+# ── In-memory cache for PCA model + mood presets (loaded on first request) ────
+_arc_pca_model = None
+_arc_mood_presets = None
+_arc_loaded = False
+
+
+def _load_arc_config(db):
+    """Load PCA model and mood presets from MongoDB arc_config collection."""
+    global _arc_pca_model, _arc_mood_presets, _arc_loaded
+    if _arc_loaded:
+        return
+
+    try:
+        pca_doc = db["arc_config"].find_one({"_id": "pca_model"})
+        if pca_doc:
+            pca_bytes = _base64.b64decode(pca_doc["data"])
+            _arc_pca_model = _pickle.loads(pca_bytes)
+            print("✅ Loaded PCA model from arc_config")
+        else:
+            print("⚠️  No PCA model found in arc_config — arc recommendations will use raw vectors")
+
+        presets_doc = db["arc_config"].find_one({"_id": "mood_presets"})
+        if presets_doc:
+            _arc_mood_presets = presets_doc
+            print("✅ Loaded mood presets from arc_config")
+        else:
+            print("⚠️  No mood presets found in arc_config — using defaults")
+
+        _arc_loaded = True
+    except Exception as e:
+        print(f"⚠️  Failed to load arc_config: {e}")
+
+
+class ArcRecommendRequest(BaseModel):
+    current_mood: str
+    desired_mood: str
+    genres: List[str] = []
+    limit: int = 10
+
+
+class ArcRateRequest(BaseModel):
+    movie_id: str
+    rating: int  # 1-5
+    mood_before: str
+    mood_after: str
+
+
+@app.get("/api/health")
+def arc_health():
+    """Health check with RAM usage."""
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        ram_mb = usage.ru_maxrss / (1024 * 1024)  # macOS returns bytes
+    except Exception:
+        ram_mb = -1
+    return {"status": "ok", "ram_mb": round(ram_mb, 1)}
+
+
+@app.get("/api/moods")
+def get_moods(db=Depends(get_db)):
+    """Return the 50 preset moods with their pre-computed VADER vectors."""
+    _load_arc_config(db)
+
+    if _arc_mood_presets:
+        return {
+            "presets": _arc_mood_presets.get("presets", mood_arc.MOOD_PRESETS),
+            "popular_current": _arc_mood_presets.get("popular_current", mood_arc.POPULAR_CURRENT),
+            "popular_desired": _arc_mood_presets.get("popular_desired", mood_arc.POPULAR_DESIRED),
+            "all_moods": _arc_mood_presets.get("all_moods", mood_arc.ALL_MOODS),
+            "vectors": _arc_mood_presets.get("vectors", {}),
+        }
+    else:
+        # Fallback: compute on the fly (lightweight — VADER only)
+        vectors = mood_arc.compute_mood_preset_vectors()
+        return {
+            "presets": mood_arc.MOOD_PRESETS,
+            "popular_current": mood_arc.POPULAR_CURRENT,
+            "popular_desired": mood_arc.POPULAR_DESIRED,
+            "all_moods": mood_arc.ALL_MOODS,
+            "vectors": vectors,
+        }
+
+
+@app.post("/api/arc-recommend")
+def arc_recommend(req: ArcRecommendRequest, db=Depends(get_db)):
+    """
+    Main emotional arc recommendation endpoint.
+
+    1. Convert current+desired mood text → bridge vector (40-dim)
+    2. PCA transform → 10-dim arc vector
+    3. Query MongoDB for candidates (filtered by genre)
+    4. Cosine similarity → return top matches
+    """
+    _load_arc_config(db)
+    limit = min(req.limit, 20)
+
+    # Step 1+2: Build bridge vector
+    bridge_raw = mood_arc.compute_bridge_vector(req.current_mood, req.desired_mood)
+
+    if _arc_pca_model is not None:
+        target_arc = _arc_pca_model.transform(bridge_raw.reshape(1, -1))[0]
+    else:
+        # If PCA model not available, use first 10 dims of raw vector
+        target_arc = bridge_raw[:10]
+
+    target_arc = np.array(target_arc, dtype=np.float32)
+
+    # Step 3: Query candidates from MongoDB
+    query = {}
+    if req.genres:
+        query["genres"] = {"$in": req.genres}
+
+    cursor = db["arc_movies"].find(query).limit(200)
+    candidates = list(cursor)
+
+    if not candidates:
+        return {
+            "results": [],
+            "query_arc": target_arc.tolist(),
+            "message": "No movies found. Run seed_arc.py to populate the database.",
+        }
+
+    # Step 4: Cosine similarity
+    arc_vectors = []
+    valid_candidates = []
+    for c in candidates:
+        vec = c.get("arc_vector")
+        if vec and len(vec) == len(target_arc):
+            arc_vectors.append(vec)
+            valid_candidates.append(c)
+
+    if not valid_candidates:
+        return {
+            "results": [],
+            "query_arc": target_arc.tolist(),
+            "message": "No valid arc vectors found in database.",
+        }
+
+    candidates_matrix = np.array(arc_vectors, dtype=np.float32)
+    scores = mood_arc.cosine_similarity_batch(target_arc, candidates_matrix)
+
+    # Sort by score descending
+    scored = list(zip(valid_candidates, scores))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:limit]
+
+    # Step 5: Build results
+    results = []
+    for movie, score in top:
+        arc_labels = movie.get("arc_labels", [])
+        results.append({
+            "id": str(movie.get("_id", "")),
+            "title": movie.get("title", ""),
+            "year": movie.get("year"),
+            "genres": movie.get("genres", []),
+            "poster_url": movie.get("poster_url"),
+            "arc_match_score": round(float(max(0, min(1, (score + 1) / 2))), 3),
+            "arc_labels": arc_labels,
+            "arc_explanation": mood_arc.build_arc_explanation(arc_labels),
+            "overview": movie.get("overview", ""),
+            "rating": movie.get("rating", 0),
+        })
+
+    return {
+        "results": results,
+        "query_arc": target_arc.tolist(),
+    }
+
+
+@app.get("/api/arc-movie/{movie_id}")
+def get_arc_movie(movie_id: str, db=Depends(get_db)):
+    """Fetch a single movie with arc data by its MongoDB _id."""
+    from bson import ObjectId
+
+    try:
+        doc = db["arc_movies"].find_one({"_id": ObjectId(movie_id)})
+    except Exception:
+        doc = db["arc_movies"].find_one({"tmdb_id": int(movie_id) if movie_id.isdigit() else 0})
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    arc_labels = doc.get("arc_labels", [])
+    return {
+        "id": str(doc.get("_id", "")),
+        "title": doc.get("title", ""),
+        "year": doc.get("year"),
+        "genres": doc.get("genres", []),
+        "poster_url": doc.get("poster_url"),
+        "tmdb_id": doc.get("tmdb_id"),
+        "arc_vector": doc.get("arc_vector", []),
+        "arc_labels": arc_labels,
+        "arc_explanation": mood_arc.build_arc_explanation(arc_labels),
+        "rating": doc.get("rating", 0),
+        "overview": doc.get("overview", ""),
+    }
+
+
+@app.post("/api/arc-rate")
+def rate_arc_movie(
+    req: ArcRateRequest,
+    current_user=Depends(get_current_user_optional),
+    db=Depends(get_db),
+):
+    """Save a mood-aware rating for a movie (mood before/after + stars)."""
+    user_id = current_user["_id"] if current_user else "anonymous"
+
+    doc = {
+        "user_id": user_id,
+        "movie_id": req.movie_id,
+        "rating": req.rating,
+        "mood_before": req.mood_before,
+        "mood_after": req.mood_after,
+        "timestamp": datetime.datetime.utcnow(),
+    }
+    db["arc_ratings"].insert_one(doc)
+    return {"message": "Rating saved", "status": "ok"}
+
+
+@app.get("/api/ping")
+def ping():
+    """Lightweight ping for cold-start pre-warming."""
+    return {"pong": True}
 
 
 if __name__ == "__main__":

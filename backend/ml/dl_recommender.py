@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-# All genres supported (must match user_preference.py ALL_GENRES)
 ALL_GENRES = [
     "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
     "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
@@ -20,23 +19,14 @@ ALL_GENRES = [
 ]
 NUM_GENRES = len(ALL_GENRES)
 GENRE_TO_IDX = {g: i for i, g in enumerate(ALL_GENRES)}
-
-# Input dimension breakdown:
-#  - 2: age_bucket (normalized 0-1), gender (0/1/0.5)
-#  - NUM_GENRES: one-hot preferred genres
-#  - NUM_GENRES: one-hot disliked genres
-#  - 4: activity counts (ratings_count, searches_count, clicks_count, avg_rating normalized)
-INPUT_DIM = 2 + NUM_GENRES + NUM_GENRES + 4
+INPUT_DIM = 2 + NUM_GENRES + NUM_GENRES + 4  # demographics + liked + disliked + activity
 
 
 class UserActivityMLP(nn.Module):
-    """
-    Deep Learning model for personalized recommendations.
-    Takes a feature vector encoding the full user profile + activity history
-    and predicts genre preference scores (0-1) for each genre.
-    """
+    """MLP that maps user profile + activity vectors to genre preference scores."""
+
     def __init__(self, input_dim=INPUT_DIM, hidden_dim=128, output_dim=NUM_GENRES):
-        super(UserActivityMLP, self).__init__()
+        super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.bn1 = nn.BatchNorm1d(hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
@@ -58,14 +48,12 @@ def _build_user_feature_vector(
     gender: str = None,
     favorite_genres: list = None,
     disliked_genres: list = None,
-    ratings: list = None,       # [{"movie_title": str, "rating": float}, ...]
-    searches: list = None,      # [str, ...]
-    clicked_movies: list = None,  # [str, ...]  activity movie_title where type='movie_click'
+    ratings: list = None,
+    searches: list = None,
+    clicked_movies: list = None,
     movies_df=None,
 ) -> np.ndarray:
-    """
-    Builds the INPUT_DIM feature vector for the MLP from user profile + activity data.
-    """
+    """Build the INPUT_DIM feature vector from user profile + activity data."""
     favorite_genres = favorite_genres or []
     disliked_genres = disliked_genres or []
     ratings = ratings or []
