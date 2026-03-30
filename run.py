@@ -136,6 +136,14 @@ def setup_environment():
 
     # 2. Update Backend Deps
     log("Checking backend dependencies...", icon=Icons.PYTHON, color=Colors.GREEN)
+    
+    # Upgrade pip to support PEP 660 editable installs from pyproject.toml
+    try:
+        subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], 
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    except Exception:
+        pass
+        
     req_file = os.path.join(BACKEND_DIR, "requirements.txt")
     pyproject_file = os.path.join(ROOT_DIR, "pyproject.toml")
     
