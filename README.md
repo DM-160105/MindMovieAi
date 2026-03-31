@@ -23,7 +23,7 @@
 
 <div align="center">
 
-### **Quick Navigation**
+## **Quick Navigation**
 
 [**📖 Overview**](#-overview) • [**🚀 Demo**](#-demo) • [**✨ Features**](#-features) • [**🛠️ Tech Stack**](#️-tech-stack) • [**🏗️ Architecture**](#️-architecture)
 [**⚙️ Setup**](#️-installation-guide) • [**📂 Structure**](#-project-structure) • [**🔌 API**](#-api-endpoints-quick-reference) • [**🛡️ License**](#-license) • [**✍️ Author**](#️-author)
@@ -257,16 +257,18 @@ Distributed under the **MIT License**. See `LICENSE` for more information.
 
 ---
 
+## ✍️ Author
+
+</br>
+
 <div align="center">
 
-# ✍️ Author
-
-<img src="https://github.com/DM-160105/MindMovieAi/blob/main/frontend/public/favicon.png" width="200" height="200">
+<img src="https://github.com/DM-160105/Devang-Makwana-Portfolio/blob/main/app/favicon.ico" width="200" height="200">
 
 ### **Devang Makwana**
 
 📧 [**<u>mindmovieai16@gmail.com</u>**](mailto:mindmovieai16@gmail.com)  
-🔗 [**<u>LinkedIn</u>**](https://linkedin.com/in/devang-makwana) • [**<u>Portfolio</u>**](https://devang-makwana.github.io)
+🔗 [**<u>LinkedIn</u>**](https://www.linkedin.com/in/makwana-devang-b13730274/) • [**<u>Portfolio</u>**](https://devangmakwana.vercel.app)
 
 <div align="center">
   <sub>Built with ❤️ for movie lovers everywhere.</sub>
