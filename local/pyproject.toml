@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mind-movie-ai"
+version = "1.0.0"
+description = "A premium movie recommender system using Machine Learning (FastAPI + Next.js)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Devang Makwana" }
+]
+dependencies = [
+    "pandas",
+    "scikit-learn",
+    "nltk",
+    "fastapi",
+    "uvicorn",
+    "requests",
+    "faiss-cpu>=1.7.4",
+    "urllib3<2",
+    "tensorflow",
+    "torch",
+    "torchtext",
+    "passlib[bcrypt]",
+    "bcrypt<4.0.0",
+    "PyJWT",
+    "python-multipart",
+    "vaderSentiment",
+    "numpy",
+    "pymongo[srv]",
+    "python-dotenv",
+    "huggingface_hub",
+    "google-auth",
+    "httpx",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8",
+]
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+line_length = 100

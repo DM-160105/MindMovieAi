@@ -1,0 +1,23 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+pandas
+scikit-learn
+nltk
+fastapi
+uvicorn
+requests
+faiss-cpu>=1.7.4
+urllib3<2
+tensorflow
+torch
+torchtext
+passlib[bcrypt]
+bcrypt<4.0.0
+PyJWT
+python-multipart
+vaderSentiment
+numpy
+pymongo[srv]
+python-dotenv
+huggingface_hub
+google-auth
+httpx
