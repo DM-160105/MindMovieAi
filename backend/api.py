@@ -1,11 +1,14 @@
 import pickle
 import json
+import importlib
+import threading
 import pandas as pd
 import numpy as np
 import requests
 import faiss
 import datetime
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -23,11 +26,25 @@ from database import get_db
 import models
 import auth
 
-# Import ML modules
-import ml.sentiment as sentiment_analysis
-import ml.dl_recommender as dl_recommender
-import ml.hf_sync as hf_sync
-import ml.context_recommender as context_recommender
+# ─── Lazy ML Module Loaders (Tier 3: load on first use) ──────────────────────
+# Defers heavy imports (torch ~10s, vader ~1s) until the endpoint is called.
+# After first import, the module is cached forever in _ml_cache.
+
+_ml_cache = {}
+
+def _lazy(name: str):
+    """Import an ML submodule on first access, cache forever."""
+    if name not in _ml_cache:
+        print(f"⏳ Lazy-loading ml.{name}...")
+        _ml_cache[name] = importlib.import_module(f"ml.{name}")
+        print(f"✅ ml.{name} loaded.")
+    return _ml_cache[name]
+
+# Convenient accessors used by endpoints
+def _sentiment():       return _lazy("sentiment")
+def _dl_recommender():  return _lazy("dl_recommender")
+def _hf_sync():         return _lazy("hf_sync")
+def _context_recommender(): return _lazy("context_recommender")
 
 # ─── Environment Variables ──────────────────────────────────────────────────────
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "8265bd1679663a7ea12ac168da84d2e8")
@@ -52,6 +69,7 @@ allowed_origins = [
     FRONTEND_URL,
     "http://localhost:3000",
     "http://localhost:3001",
+    "https://dev1601-mindmovieai-api.hf.space",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -61,47 +79,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load artifacts — download from Hugging Face if not present locally
-from hf_utils import get_artifact_file
+# ─── Deferred Artifact Loading (Tier 2: background thread) ───────────────────
+# Server boots instantly (Tier 1). Artifacts load in background (~10s).
+# Endpoints that need data check _data_ready before proceeding.
 
-try:
-    pkl_path = get_artifact_file('movie_dict.pkl')
-    idx_path = get_artifact_file('movies.index')
+_data_lock = threading.Lock()
+_data_ready = threading.Event()
 
-    movies_dict = pickle.load(open(pkl_path, 'rb'))
-    movies = pd.DataFrame(movies_dict)
-    if 'title' in movies.columns:
-        movies['title_lower'] = movies['title'].astype(str).str.lower()
-        movies['title_acronym'] = movies['title_lower'].apply(lambda x: ''.join([w[0] for w in str(x).split() if w]))
-    index = faiss.read_index(idx_path)
-    print("✅ Artifacts loaded successfully.")
-except Exception as e:
-    print(f"❌ Failed to load artifacts: {e}")
-    movies = pd.DataFrame()
-    index = None
-
-# Optional loading of full CSV data for /movie-details
-from hf_utils import get_dataset_file
-try:
-    movies_csv_path = get_dataset_file('tmdb_5000_movies.csv')
-    credits_csv_path = get_dataset_file('tmdb_5000_credits.csv')
-    movies_csv = pd.read_csv(movies_csv_path)
-    credits_csv = pd.read_csv(credits_csv_path)
-    tmdb_full_data = movies_csv.merge(credits_csv, left_on='id', right_on='movie_id', suffixes=('', '_credits'))
-except Exception as e:
-    print(f"Warning: Could not load TMDB CSV data: {e}")
-    tmdb_full_data = None
+movies = pd.DataFrame()
+index = None
+tmdb_full_data = None
+anime_df_full = None
+bolly_df_full = None
 
 
-try:
-    anime_df_full = pd.read_csv(get_dataset_file('anime-dataset-2023.csv'))
-except Exception:
-    anime_df_full = None
+def _load_artifacts_background():
+    """Load all artifacts in a background thread so the server starts instantly."""
+    global movies, index, tmdb_full_data, anime_df_full, bolly_df_full
 
-try:
-    bolly_df_full = pd.read_csv(get_dataset_file('bollywoodmovies.csv'))
-except Exception:
-    bolly_df_full = None
+    from hf_utils import get_artifact_file, get_dataset_file
+
+    # ── Core artifacts (required for /movies, /recommend) ──
+    try:
+        pkl_path = get_artifact_file('movie_dict.pkl')
+        idx_path = get_artifact_file('movies.index')
+
+        movies_dict = pickle.load(open(pkl_path, 'rb'))
+        _movies = pd.DataFrame(movies_dict)
+        if 'title' in _movies.columns:
+            _movies['title_lower'] = _movies['title'].astype(str).str.lower()
+            _movies['title_acronym'] = _movies['title_lower'].apply(
+                lambda x: ''.join([w[0] for w in str(x).split() if w])
+            )
+        _index = faiss.read_index(idx_path)
+
+        with _data_lock:
+            movies = _movies
+            index = _index
+        print("✅ Core artifacts loaded (movie_dict.pkl + movies.index).")
+    except Exception as e:
+        print(f"❌ Failed to load core artifacts: {e}")
+
+    # ── Secondary datasets (for /movie-details) ──
+    try:
+        movies_csv_path = get_dataset_file('tmdb_5000_movies.csv')
+        credits_csv_path = get_dataset_file('tmdb_5000_credits.csv')
+        _movies_csv = pd.read_csv(movies_csv_path)
+        _credits_csv = pd.read_csv(credits_csv_path)
+        with _data_lock:
+            tmdb_full_data = _movies_csv.merge(
+                _credits_csv, left_on='id', right_on='movie_id', suffixes=('', '_credits')
+            )
+    except Exception as e:
+        print(f"Warning: Could not load TMDB CSV: {e}")
+
+    try:
+        with _data_lock:
+            anime_df_full = pd.read_csv(get_dataset_file('anime-dataset-2023.csv'))
+    except Exception:
+        pass
+
+    try:
+        with _data_lock:
+            bolly_df_full = pd.read_csv(get_dataset_file('bollywoodmovies.csv'))
+    except Exception:
+        pass
+
+    _data_ready.set()
+    print("✅ All artifacts loaded. Server fully ready.")
+
+
+# Start background loading immediately
+threading.Thread(target=_load_artifacts_background, daemon=True, name="artifact-loader").start()
 
 def fetch_poster(row):
     """Fetches the movie poster URL from TMDB API or row directly."""
@@ -257,6 +306,18 @@ def read_root_head():
     """Explicitly handle HEAD requests to / to avoid 405 Method Not Allowed."""
     from fastapi.responses import Response
     return Response(status_code=200)
+
+@app.get("/health")
+def health_check():
+    """Detailed server status for monitoring warm-up progress."""
+    return {
+        "status": "ok",
+        "data_ready": _data_ready.is_set(),
+        "movies_loaded": len(movies) > 0,
+        "movies_count": len(movies),
+        "index_loaded": index is not None,
+        "ml_modules_loaded": list(_ml_cache.keys()),
+    }
 
 @app.get("/favicon.ico", include_in_schema=False)
 @app.get("/apple-touch-icon.png", include_in_schema=False)
@@ -507,7 +568,7 @@ def _save_preferences(prefs: PreferencesUpdate, current_user: dict, db):
     # Sync this updated profile to the Hugging Face CSV in the background
     updated_doc = db["users"].find_one({"_id": current_user["_id"]})
     if updated_doc:
-        hf_sync.queue_user_sync(updated_doc)
+        _hf_sync().queue_user_sync(updated_doc)
 
 
 @app.put("/me/preferences")
@@ -632,7 +693,7 @@ def predict_user_preferences(
     
     # Generate context-aware recommendations utilizing time of day and collaborative context
     user_id_str = str(current_user["_id"])
-    result = context_recommender.get_context_recommendations(user_id_str, ratings_list, search_queries, movies)
+    result = _context_recommender().get_context_recommendations(user_id_str, ratings_list, search_queries, movies)
     return result
 
 
@@ -966,7 +1027,7 @@ def get_movie_sentiment(title: str):
     if not match.empty and pd.notna(match.iloc[0].get('vote_average')):
         rating = float(match.iloc[0]['vote_average'])
         
-    analysis = sentiment_analysis.analyze_movie_sentiment(title, rating)
+    analysis = _sentiment().analyze_movie_sentiment(title, rating)
     return analysis
 
 @app.post("/predict-popularity")
@@ -998,7 +1059,7 @@ def get_dl_recommendations_endpoint(
     db=Depends(get_db)
 ):
     user_data = {"likes_count": 10, "views_count": 50}
-    dl_scores = dl_recommender.get_dl_recommendations(user_data, top_k=3)
+    dl_scores = _dl_recommender().get_dl_recommendations(user_data, top_k=3)
     top_genres = [g["genre"] for g in dl_scores]
 
     if 'genres_list' in movies.columns:
@@ -1059,7 +1120,7 @@ def get_personalized_recommendations(
     watchlist_db = list(db["watchlist"].find({"user_id": current_user["_id"]}))
     watchlist_items = [w.get("movie_title") for w in watchlist_db if w.get("movie_title")]
 
-    dl_genre_scores = dl_recommender.get_dl_recommendations_full(
+    dl_genre_scores = _dl_recommender().get_dl_recommendations_full(
         age=age, gender=gender, favorite_genres=favorite_genres,
         disliked_genres=disliked_genres, ratings=ratings, searches=searches,
         clicked_movies=clicked_movies, favorites=favorites, watchlist=watchlist_items,

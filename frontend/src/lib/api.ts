@@ -1,14 +1,67 @@
 import axios from 'axios';
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// ─── Failover Configuration ─────────────────────────────────────────────────
+// Primary: HF Spaces (16 GB RAM, ML-native)
+// Fallback: Render (512 MB RAM, keeps working if HF is down)
+const PRIMARY_API  = process.env.NEXT_PUBLIC_API_URL          || 'https://dev1601-mindmovieai-api.hf.space';
+const FALLBACK_API = process.env.NEXT_PUBLIC_FALLBACK_API_URL || 'https://recommendation-mindmovie.onrender.com';
+
+let activeBaseUrl = PRIMARY_API;
+let lastHealthCheck = 0;
+const HEALTH_CHECK_INTERVAL = 60_000; // Re-check primary every 60s
+
+async function resolveApiBase(): Promise<string> {
+  if (typeof window === 'undefined') return PRIMARY_API; // SSR: always use primary
+  if (!FALLBACK_API) return PRIMARY_API;
+
+  const now = Date.now();
+  if (now - lastHealthCheck < HEALTH_CHECK_INTERVAL) return activeBaseUrl;
+
+  try {
+    const res = await fetch(`${PRIMARY_API}/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    });
+    activeBaseUrl = res.ok ? PRIMARY_API : FALLBACK_API;
+  } catch {
+    activeBaseUrl = FALLBACK_API;
+  }
+  lastHealthCheck = now;
+  return activeBaseUrl;
+}
+
+/** Check detailed server status (used by ServerWarmup component) */
+export async function getServerStatus(): Promise<{
+  ready: boolean;
+  dataReady: boolean;
+  activeServer: 'primary' | 'fallback';
+}> {
+  const base = await resolveApiBase();
+  try {
+    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        ready: true,
+        dataReady: data.data_ready ?? false,
+        activeServer: base === PRIMARY_API ? 'primary' : 'fallback',
+      };
+    }
+  } catch { /* server unreachable */ }
+  return { ready: false, dataReady: false, activeServer: 'fallback' };
+}
+
+export const API_BASE = PRIMARY_API;
 
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Inject JWT token from localStorage on every request
-api.interceptors.request.use((config) => {
+// Dynamically resolve base URL + inject JWT on every request
+api.interceptors.request.use(async (config) => {
+  config.baseURL = await resolveApiBase();
+
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('stremflix_token');
     if (token) {
@@ -17,6 +70,25 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// Auto-retry on 503 "warming up" responses (server loading artifacts)
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const config = error.config;
+    if (
+      error.response?.status === 503 &&
+      error.response?.data?.status === 'warming_up' &&
+      !config._retried
+    ) {
+      config._retried = true;
+      const retryAfter = parseInt(error.response.headers?.['retry-after'] || '5', 10);
+      await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+      return api(config);
+    }
+    return Promise.reject(error);
+  }
+);
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const loginUser = (username: string, password: string) =>

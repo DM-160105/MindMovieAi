@@ -1,0 +1,17 @@
+# Don't push these to HF Space
+__pycache__/
+*.py[cod]
+.env
+.env.local
+.venv/
+venv/
+*.pkl
+*.index
+*.h5
+*.joblib
+artifacts/
+data/
+tmdb_cache.json
+.DS_Store
+*.swp
+*.swo
