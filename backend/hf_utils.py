@@ -7,6 +7,11 @@ Downloads CSV data files and pre-built ML artifacts from the
 
 import os
 
+# HF Spaces sandbox: only /tmp is writable.
+# SPACE_ID is set automatically by Hugging Face when running inside a Space.
+if os.environ.get("SPACE_ID"):
+    os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
+
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 
